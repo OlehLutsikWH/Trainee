@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { getViews } from './platforms.js';
 
-const PORT = Number(process.env.PORT) || 3000;
 const MAX_URLS = 1000;
 const CONCURRENCY = 6;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -83,6 +82,16 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`View Counter працює: http://localhost:${PORT}`);
-});
+// Starts the server on 127.0.0.1; port 0 picks any free port. Resolves with the actual port.
+export function startServer(port) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve(server.address().port));
+  });
+}
+
+// `npm start` runs this file directly; the desktop app imports startServer instead.
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const port = await startServer(Number(process.env.PORT) || 3000);
+  console.log(`View Counter працює: http://localhost:${port}`);
+}
