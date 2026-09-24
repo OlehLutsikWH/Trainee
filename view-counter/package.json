@@ -1,0 +1,14 @@
+{
+  "name": "view-counter",
+  "version": "0.1.0",
+  "description": "Paste links to posts and get their view counts",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}
