@@ -42,11 +42,11 @@ function decodeHtml(str) {
 
 function metaContent(html, name) {
   const re = new RegExp(
-    `<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=["']([^"']*)["']`,
+    `<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=(?:"([^"]*)"|'([^']*)')`,
     'i',
   );
   const m = html.match(re);
-  return m ? decodeHtml(m[1]).replace(/\s+/g, ' ').trim() : null;
+  return m ? decodeHtml(m[1] ?? m[2]).replace(/\s+/g, ' ').trim() : null;
 }
 
 // "1.2K" -> 1200, "3,4M" -> 3400000, "987" -> 987
@@ -156,7 +156,7 @@ export function parseTelegramFeed(html) {
 
 async function fetchTelegram(url, id) {
   if (id.private) {
-    throw new ViewsError('Це приватний канал (t.me/c/…) — перегляди видно лише його учасникам');
+    throw new ViewsError('Приватний канал — перегляди видно лише учасникам');
   }
   if (id.feed) {
     const before = id.before ? `?before=${encodeURIComponent(id.before)}` : '';
@@ -198,10 +198,18 @@ async function fetchTikTok(url) {
 
 // ---------- Any other website (news sites etc.) ----------
 
-const VIEW_WORDS = 'переглядів|перегляди|перегляд|просмотров|просмотра|просмотры|просмотр|views|view';
+const VIEW_WORDS =
+  'переглядів|перегляди|перегляд|переглянуто|переглянули|прочитали|прочитано|хітів|' +
+  'просмотров|просмотра|просмотры|просмотр|просмотрено|views|view|hits|reads';
+
+// A counter as sites print it: "3 641", "1525", "1,2 тис.", "12.5K"
+const COUNT = String.raw`(\d+(?:[.,]\d+)?\s*(?:тис\.?|тыс\.?|k|к)(?![а-яіїєґa-z])|\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)`;
 
 function toInt(str) {
-  const n = Number(String(str).replace(/[\s\u00a0\u202f.,]/g, ''));
+  const s = String(str).trim();
+  const short = s.match(/^(\d+(?:[.,]\d+)?)\s*(?:тис|тыс|k|к)/i);
+  if (short) return Math.round(Number(short[1].replace(',', '.')) * 1000);
+  const n = Number(s.replace(/[\s\u00a0\u202f.,]/g, ''));
   return Number.isFinite(n) ? n : null;
 }
 
@@ -227,22 +235,35 @@ export function parseGenericPage(html) {
     html.match(/itemprop=["']interactionCount["'][^>]*content=["'](?:UserPageVisits|UserViews):(\d+)/i);
   if (ld) return found(Number(ld[1]), 'schema.org');
 
-  // An element whose class names it a view counter, e.g. "article__views" or "post-views-count",
-  // whose first text is the number.
-  for (const m of html.matchAll(/<[a-z][^>]*\sclass=["']([^"']*)["'][^>]*>/gi)) {
-    if (!/(?:^|[\s_-])(?:views?|eye|перегляд\w*)(?:$|[\s_-])/i.test(m[1])) continue;
+  const attr = html.match(/\sdata-(?:views|view-count|views-count|post-views|count-views)=["'](\d+)["']/i);
+  if (attr) return found(Number(attr[1]), 'лічильник на сторінці');
+
+  // An element marked as a view counter — by class ("article__views", "fa-eye", "post-views-count")
+  // or an eye icon (<use href="#icon-eye">) — followed by the number.
+  const markers = /<[a-z][^>]*\sclass=["']([^"']*)["'][^>]*>|<(?:use|img|svg)[^>]*(?:href|src)=["']([^"']*)["'][^>]*>/gi;
+  const countFirst = new RegExp(`^\\s*(?:👁️?\\s*)?${COUNT}(?![\\d.,:/])`, 'i');
+  for (const m of html.matchAll(markers)) {
+    const isCounter = m[1] !== undefined
+      ? /(?:^|[\s_-])(?:views?|eye|перегляд\w*|hits|watch(?:ed)?)(?:$|[\s_-])/i.test(m[1])
+      : /(?:^|[#/_-])(?:icon-)?(?:eye|views?)(?:$|[._-])/i.test(m[2]);
+    if (!isCounter) continue;
     const after = pageText(html.slice(m.index + m[0].length, m.index + m[0].length + 400));
-    const num = after.match(/^\s*(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?![\d.,:\/])/);
+    const num = after.match(countFirst);
     if (num) return found(toInt(num[1]), 'лічильник на сторінці');
   }
 
+  // Counters kept in the page's embedded JSON (common on sites built with JS frameworks)
+  const json = html.match(/"(?:views|viewsCount|views_count|view_count|viewCounter|pageviews|pageViews|page_views|hits|read_count|readCount)"\s*:\s*"?(\d+)"?[,}]/);
+  if (json && Number(json[1]) > 0) return found(Number(json[1]), 'дані сторінки');
+
   const text = pageText(html);
-  const before = text.match(new RegExp(`(?:^|[^\\wа-яіїєґ])(?:${VIEW_WORDS})\\s*:?\\s*(\\d[\\d \\u00a0\\u202f]{0,12})(?![\\d])`, 'i'));
-  const after = text.match(new RegExp(`(?:^|[^\\d.,])(\\d{1,3}(?:[ \\u00a0\\u202f]\\d{3})+|\\d+)\\s*(?:${VIEW_WORDS})(?![а-яіїєґa-z])`, 'i'));
-  const m = after || before;
+  const eye = text.match(new RegExp(`👁️?\\s*${COUNT}`, 'i'));
+  const before = text.match(new RegExp(`(?:^|[^\\wа-яіїєґ])(?:${VIEW_WORDS})\\s*:?\\s*${COUNT}(?![\\d])`, 'i'));
+  const after = text.match(new RegExp(`(?:^|[^\\d.,])${COUNT}\\s*(?:${VIEW_WORDS})(?![а-яіїєґa-z])`, 'i'));
+  const m = after || before || eye;
   if (m && toInt(m[1]) !== null) return found(toInt(m[1]), 'текст сторінки');
 
-  throw new ViewsError('Сайт не показує кількість переглядів (або підвантажує її скриптом)');
+  throw new ViewsError('Лічильника на сторінці не знайдено');
 }
 
 // Optional: a real browser that renders the page (runs its scripts) and hands back the HTML.
@@ -283,15 +304,14 @@ async function fetchGeneric(url) {
 
   if (quick) return quick;
   if (pageRenderer && !pageMissing) {
-    throw new ViewsError('Сайт не показує кількість переглядів (перевірено й у вбудованому браузері)');
+    throw new ViewsError('Лічильника на сторінці немає (перевірено й у браузері)');
   }
   throw quickError;
 }
 
 // ---------- Registry ----------
 
-const NOT_PUBLIC =
-  'Ця платформа не показує перегляди публічно. Потрібне підключення акаунта власника (буде в наступних версіях).';
+const NOT_PUBLIC = 'Перегляди видно лише власнику акаунта — впишіть вручну';
 
 const PLATFORMS = [
   { name: 'YouTube', match: matchYouTube, fetchViews: fetchYouTube },
@@ -299,7 +319,7 @@ const PLATFORMS = [
   { name: 'TikTok', match: matchTikTok, fetchViews: fetchTikTok },
   { name: 'Instagram', match: (u) => /(^|\.)instagram\.com$/.test(u.hostname) || null, unsupported: NOT_PUBLIC },
   { name: 'Facebook', match: (u) => /(^|\.)(facebook\.com|fb\.watch)$/.test(u.hostname) || null, unsupported: NOT_PUBLIC },
-  { name: 'X (Twitter)', match: (u) => /(^|\.)(x\.com|twitter\.com)$/.test(u.hostname) || null, unsupported: 'Перегляди X доступні лише через платний API (буде в наступних версіях).' },
+  { name: 'X (Twitter)', match: (u) => /(^|\.)(x\.com|twitter\.com)$/.test(u.hostname) || null, unsupported: 'Перегляди X доступні лише через платний API — впишіть вручну' },
 ];
 
 export function detectPlatform(rawUrl) {

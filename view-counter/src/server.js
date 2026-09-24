@@ -48,23 +48,23 @@ async function handleViews(req, res) {
   if (!urls.some(Boolean)) return sendJson(res, 400, { error: 'Додайте хоча б одне посилання' });
   if (urls.length > MAX_URLS) return sendJson(res, 400, { error: `Максимум ${MAX_URLS} рядків за раз` });
 
+  // Stream one JSON line per link as soon as it is checked, so the page can show progress
   const unique = [...new Set(urls.filter(Boolean))];
-  const fetched = await mapLimited(unique, CONCURRENCY, getViews);
-  const byUrl = new Map(unique.map((u, i) => [u, fetched[i]]));
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache' });
+  const send = (obj) => res.write(`${JSON.stringify(obj)}\n`);
+  let cancelled = false;
+  res.on('close', () => { cancelled = !res.writableEnded; });
 
-  const results = urls.flatMap((u, i) => {
-    const line = i + 1;
-    if (!u) return [{ line, url: '', ok: false, empty: true }];
-    return [byUrl.get(u)].flat().map((r) => ({ line, ...r }));
+  send({ type: 'start', total: unique.length });
+  await mapLimited(unique, CONCURRENCY, async (url) => {
+    if (cancelled) return;
+    const result = await getViews(url);
+    if (!cancelled) send({ type: 'result', url, result });
   });
-  // Count each post once even if the same link was pasted twice
-  const counted = new Set();
-  const totalViews = results.reduce((sum, r) => {
-    if (!r.ok || counted.has(r.url)) return sum;
-    counted.add(r.url);
-    return sum + r.views;
-  }, 0);
-  sendJson(res, 200, { totalViews, results });
+  if (!cancelled) {
+    send({ type: 'done' });
+    res.end();
+  }
 }
 
 const server = http.createServer(async (req, res) => {

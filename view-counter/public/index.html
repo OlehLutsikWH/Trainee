@@ -6,154 +6,306 @@
   <title>View Counter</title>
   <style>
     :root {
-      --bg: #f6f7f9; --card: #fff; --text: #1a1d23; --muted: #6b7280;
-      --border: #e3e6ea; --accent: #2563eb; --ok: #15803d; --err: #b91c1c;
+      --bg: #f6f7f9; --card: #fff; --text: #1a1d23; --muted: #6b7280; --row-hover: #f1f4f9;
+      --border: #e3e6ea; --accent: #2563eb; --accent-soft: #e8efff; --ok: #15803d; --err: #b91c1c; --warn: #b45309;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #111318; --card: #1a1d24; --text: #e8eaee; --muted: #9aa1ad;
-        --border: #2c313b; --accent: #5b8def; --ok: #4ade80; --err: #f87171;
+        --bg: #111318; --card: #1a1d24; --text: #e8eaee; --muted: #9aa1ad; --row-hover: #20242d;
+        --border: #2c313b; --accent: #5b8def; --accent-soft: #1f2a44; --ok: #4ade80; --err: #f87171; --warn: #fbbf24;
       }
     }
     * { box-sizing: border-box; }
     body {
       margin: 0; background: var(--bg); color: var(--text);
-      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     }
-    main { max-width: 960px; margin: 0 auto; padding: 32px 16px; }
-    h1 { margin: 0 0 4px; font-size: 26px; }
-    .sub { color: var(--muted); margin: 0 0 24px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    main { max-width: 1440px; margin: 0 auto; padding: 24px; }
+    header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: 24px; }
+    .sub { color: var(--muted); margin: 0; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
     textarea {
-      width: 100%; min-height: 160px; resize: vertical; padding: 12px;
+      width: 100%; height: 130px; resize: vertical; padding: 10px 12px;
       border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);
-      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
-    .row { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .spacer { flex: 1; }
     button {
-      border: 0; border-radius: 8px; padding: 10px 18px; font-size: 15px; cursor: pointer;
-      background: var(--accent); color: #fff;
+      border: 0; border-radius: 8px; padding: 9px 16px; font-size: 14px; cursor: pointer;
+      background: var(--accent); color: #fff; white-space: nowrap;
     }
     button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
-    button:disabled { opacity: .6; cursor: wait; }
+    button:disabled { opacity: .55; cursor: default; }
     .hint { color: var(--muted); font-size: 13px; }
-    .total { font-size: 32px; font-weight: 700; }
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    th { color: var(--muted); font-weight: 500; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
-    th.num { text-align: right; }
-    a { color: var(--accent); word-break: break-all; }
-    .err { color: var(--err); }
-    .method { font-size: 12px; font-weight: 400; }
-    .muted { color: var(--muted); }
+
+    /* Summary */
+    .summary { display: flex; gap: 32px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+    .stat .label { color: var(--muted); font-size: 13px; }
+    .stat .value { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .progress { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 12px; }
+    .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+    .filters { display: flex; gap: 6px; }
+    .chip {
+      padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent;
+      color: var(--text); font-size: 13px;
+    }
+    .chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+    /* Table: fixed layout so long links never push the page sideways */
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; font-size: 13px; position: sticky; top: 0; background: var(--card); z-index: 1; }
+    tbody tr:hover { background: var(--row-hover); }
+    col.c-line { width: 48px; }
+    col.c-source { width: 170px; }
+    col.c-views { width: 150px; }
+    col.c-note { width: 30%; }
+    .line { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .post-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .post-url { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--accent); text-decoration: none; }
+    .post-url:hover { text-decoration: underline; }
+    th.num, td.num { text-align: right; }
+    .views { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 15px; }
+    .note { font-size: 12px; color: var(--muted); }
+    .note.err { color: var(--err); }
+    .note.manual { color: var(--warn); }
+    .pending { color: var(--muted); font-style: italic; }
+    input.manual {
+      width: 110px; padding: 4px 8px; text-align: right; font: inherit; font-variant-numeric: tabular-nums;
+      border: 1px dashed var(--border); border-radius: 6px; background: transparent; color: var(--text);
+    }
+    input.manual:focus { outline: none; border-style: solid; border-color: var(--accent); }
+    input.manual.filled { border-style: solid; border-color: var(--warn); }
     [hidden] { display: none !important; }
+
+    @media (max-width: 800px) {
+      main { padding: 12px; }
+      col.c-source { width: 0; }
+      .source, th.source-h { display: none; }
+      col.c-note { width: 35%; }
+    }
   </style>
 </head>
 <body>
 <main>
-  <h1>View Counter</h1>
-  <p class="sub">Вставте посилання на пости — отримаєте кількість переглядів.</p>
+  <header>
+    <h1>View Counter</h1>
+    <p class="sub">Вставте посилання на публікації — програма знайде кількість переглядів.</p>
+  </header>
 
   <section class="card">
-    <textarea id="urls" placeholder="Одне посилання на рядок, наприклад:
-https://www.youtube.com/watch?v=dQw4w9WgXcQ
-https://t.me/durov/300
-https://t.me/s/durov
-https://www.tiktok.com/@user/video/1234567890
-https://nv.ua/ukr/...  (новинні сайти, які показують лічильник)
+    <textarea id="urls" placeholder="Одне посилання на рядок. Можна вставити цілу колонку з Excel — порядок рядків збережеться.
 
-Можна вставити цілу колонку з Excel — порядок рядків збережеться."></textarea>
-    <div class="row">
+https://www.youtube.com/watch?v=...
+https://t.me/channel/123
+https://nv.ua/ukr/..."></textarea>
+    <div class="row" style="margin-top: 10px;">
       <button id="go">Порахувати перегляди</button>
-      <span class="hint" id="status">YouTube, Telegram, TikTok і новинні сайти з лічильником переглядів</span>
+      <button id="stop" class="secondary" hidden>Зупинити</button>
+      <span class="hint" id="status">YouTube, Telegram, TikTok і сайти, що показують лічильник переглядів</span>
     </div>
   </section>
 
   <section class="card" id="result" hidden>
-    <div class="row" style="justify-content: space-between; margin-top: 0;">
-      <div>
-        <div class="muted">Загалом переглядів</div>
-        <div class="total" id="total">0</div>
-      </div>
-      <div class="row" style="margin-top: 0;">
+    <div class="summary">
+      <div class="stat"><div class="label">Загалом переглядів</div><div class="value" id="total">0</div></div>
+      <div class="stat"><div class="label">Знайдено</div><div class="value" id="found">0</div></div>
+      <div class="spacer"></div>
+      <div class="row">
         <button class="secondary" id="copy" title="Скопіювати перегляди по рядках, щоб вставити в колонку Excel">Копіювати колонку переглядів</button>
         <button class="secondary" id="csv">Завантажити CSV</button>
       </div>
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>#</th><th>Джерело</th><th>Пост</th><th class="num">Перегляди</th></tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
+    <div class="progress" id="progress"><div></div></div>
+    <div class="row" style="margin-bottom: 8px;">
+      <div class="filters">
+        <button class="chip active" data-filter="all">Усі</button>
+        <button class="chip" data-filter="ok">Знайдено</button>
+        <button class="chip" data-filter="missing">Не знайдено</button>
+      </div>
+      <span class="hint">Де цифру не знайдено — впишіть її вручну в колонці «Перегляди», вона піде в копію та CSV.</span>
     </div>
+    <table>
+      <colgroup><col class="c-line"><col class="c-source"><col><col class="c-views"><col class="c-note"></colgroup>
+      <thead><tr><th>#</th><th class="source-h">Джерело</th><th>Публікація</th><th class="num">Перегляди</th><th>Примітка</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
   </section>
 </main>
 
 <script>
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => n.toLocaleString('uk-UA');
-  let lastResults = [];
+
+  // State: pasted lines, fetched results by URL, manual numbers by "line|url"
+  let lines = [];
+  let byUrl = new Map();
+  let manual = new Map();
+  let filter = 'all';
+  let controller = null;
+  let expected = 0;
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   }
 
-  function render({ totalViews, results }) {
-    lastResults = results;
-    $('total').textContent = fmt(totalViews);
-    $('rows').innerHTML = results.map((r) => r.empty ? `
-      <tr><td class="muted">${r.line}</td><td colspan="3" class="muted">порожній рядок</td></tr>` : `
-      <tr>
-        <td class="muted">${r.line}</td>
-        <td>${escapeHtml(r.platform ?? '—')}</td>
-        <td>
-          ${r.title ? `<div>${escapeHtml(r.title)}</div>` : ''}
-          <a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.url)}</a>
-        </td>
-        <td class="num">${r.ok
-          ? (r.approximate ? '≈ ' : '') + fmt(r.views) + (r.method ? `<div class="muted method">${escapeHtml(r.method)}</div>` : '')
-          : `<span class="err">${escapeHtml(r.error)}</span>`}</td>
-      </tr>`).join('');
+  // Flattened rows in input order: a channel link may expand into several posts
+  function rows() {
+    return lines.flatMap((url, i) => {
+      const line = i + 1;
+      if (!url) return [{ line, empty: true }];
+      const r = byUrl.get(url);
+      if (!r) return [{ line, url, pending: true }];
+      return [r].flat().map((x) => {
+        const key = `${line}|${x.url}`;
+        const typed = manual.get(key);
+        return { ...x, line, key, url: x.url || url, views: x.ok ? x.views : typed, manual: !x.ok && typed != null };
+      });
+    });
+  }
+
+  const hasViews = (r) => r.views != null && !r.pending && !r.empty;
+
+  function renderSummary(all) {
+    const counted = new Set();
+    let total = 0;
+    for (const r of all) {
+      if (!hasViews(r) || counted.has(r.url)) continue;
+      counted.add(r.url);
+      total += r.views;
+    }
+    const withUrl = all.filter((r) => !r.empty);
+    $('total').textContent = fmt(total);
+    $('found').textContent = `${withUrl.filter(hasViews).length} з ${withUrl.length}`;
+    const done = new Set(lines.filter((u) => u && byUrl.has(u))).size;
+    $('progress').firstElementChild.style.width = expected ? `${(done / expected) * 100}%` : '0';
+    $('progress').hidden = !controller;
+  }
+
+  function rowHtml(r) {
+    if (r.empty) return `<tr><td class="line">${r.line}</td><td class="source"></td><td class="pending" colspan="3">порожній рядок</td></tr>`;
+    const title = r.title ? `<div class="post-title" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>` : '';
+    const link = `<a class="post-url" href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="${escapeHtml(r.url)}">${escapeHtml(r.url)}</a>`;
+    let views;
+    let note;
+    if (r.pending) {
+      views = '<span class="pending">перевіряю…</span>';
+      note = '';
+    } else if (r.ok) {
+      views = `<span class="views">${r.approximate ? '≈ ' : ''}${fmt(r.views)}</span>`;
+      note = `<span class="note">${escapeHtml(r.method || '')}</span>`;
+    } else {
+      views = `<input class="manual${r.manual ? ' filled' : ''}" data-key="${escapeHtml(r.key)}" inputmode="numeric" placeholder="вписати" value="${r.manual ? r.views : ''}">`;
+      note = r.manual
+        ? '<span class="note manual">вписано вручну</span>'
+        : `<span class="note err">${escapeHtml(r.error)}</span>`;
+    }
+    return `<tr>
+      <td class="line">${r.line}</td>
+      <td class="source" title="${escapeHtml(r.platform)}">${escapeHtml(r.platform ?? '')}</td>
+      <td>${title}${link}</td>
+      <td class="num">${views}</td>
+      <td>${note}</td>
+    </tr>`;
+  }
+
+  function render() {
+    const all = rows();
+    renderSummary(all);
+    const visible = all.filter((r) =>
+      filter === 'all' || (filter === 'ok' ? hasViews(r) : !r.empty && !hasViews(r)));
+    $('rows').innerHTML = visible.map(rowHtml).join('');
     $('result').hidden = false;
+  }
+
+  // Re-rendering while typing would steal focus, so manual input only updates the summary
+  $('rows').addEventListener('input', (e) => {
+    if (!e.target.matches('input.manual')) return;
+    const digits = e.target.value.replace(/\D/g, '');
+    if (digits !== e.target.value) e.target.value = digits;
+    if (digits) manual.set(e.target.dataset.key, Number(digits));
+    else manual.delete(e.target.dataset.key);
+    e.target.classList.toggle('filled', !!digits);
+    const note = e.target.closest('tr').querySelector('.note');
+    if (note && digits) { note.className = 'note manual'; note.textContent = 'вписано вручну'; }
+    renderSummary(rows());
+  });
+  $('rows').addEventListener('change', (e) => { if (e.target.matches('input.manual')) render(); });
+
+  document.querySelectorAll('.chip').forEach((chip) => chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+    filter = chip.dataset.filter;
+    render();
+  }));
+
+  function setRunning(running) {
+    $('go').disabled = running;
+    $('go').textContent = running ? 'Рахую…' : 'Порахувати перегляди';
+    $('stop').hidden = !running;
+    $('urls').readOnly = running;
   }
 
   $('go').addEventListener('click', async () => {
     // One line = one row, blank lines kept so the order matches the spreadsheet
-    const urls = $('urls').value.replace(/\s+$/, '').split(/\r?\n/).map((l) => l.trim());
-    if (!urls.some(Boolean)) return $('urls').focus();
-    const btn = $('go');
-    btn.disabled = true;
-    btn.textContent = 'Рахую…';
-    $('status').textContent = `Перевіряю ${urls.filter(Boolean).length} посилань, це може зайняти кілька хвилин…`;
+    const input = $('urls').value.replace(/\s+$/, '').split(/\r?\n/).map((l) => l.trim());
+    if (!input.some(Boolean)) return $('urls').focus();
+    lines = input;
+    byUrl = new Map();
+    manual = new Map();
+    expected = new Set(lines.filter(Boolean)).size;
+    controller = new AbortController();
+    setRunning(true);
+    $('status').textContent = `Перевіряю ${expected} посилань. Складні сайти відкриваються у вбудованому браузері — це може зайняти кілька хвилин.`;
+    render();
+
     try {
       const res = await fetch('/api/views', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls }),
+        body: JSON.stringify({ urls: lines }),
+        signal: controller.signal,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      render(data);
+      if (!res.ok) throw new Error((await res.json()).error);
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = '';
+      let timer = null;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        const parts = buffer.split('\n');
+        buffer = parts.pop();
+        for (const part of parts) {
+          if (!part) continue;
+          const msg = JSON.parse(part);
+          if (msg.type === 'result') byUrl.set(msg.url, msg.result);
+        }
+        // Batch redraws: many results can arrive at once
+        if (!timer) timer = setTimeout(() => { timer = null; render(); }, 150);
+      }
+      $('status').textContent = 'Готово. Перевірте рядки «Не знайдено» — туди можна вписати цифру вручну.';
     } catch (err) {
-      alert(err.message || 'Помилка');
+      $('status').textContent = err.name === 'AbortError' ? 'Зупинено.' : `Помилка: ${err.message}`;
     } finally {
-      btn.disabled = false;
-      btn.textContent = 'Порахувати перегляди';
-      $('status').textContent = 'YouTube, Telegram, TikTok і новинні сайти з лічильником переглядів';
+      controller = null;
+      setRunning(false);
+      render();
     }
   });
 
+  $('stop').addEventListener('click', () => controller?.abort());
+
   // One value per input line (sum if a channel link expanded into several posts), blank when not found
   $('copy').addEventListener('click', async () => {
-    const byLine = new Map();
-    for (const r of lastResults) {
-      if (!byLine.has(r.line)) byLine.set(r.line, '');
-      if (r.ok) byLine.set(r.line, (Number(byLine.get(r.line)) || 0) + r.views);
+    const byLine = new Map(lines.map((_, i) => [i + 1, '']));
+    for (const r of rows()) {
+      if (hasViews(r)) byLine.set(r.line, (Number(byLine.get(r.line)) || 0) + r.views);
     }
-    const text = [...byLine.keys()].sort((a, b) => a - b).map((l) => byLine.get(l)).join('\n');
+    const text = [...byLine.values()].join('\n');
     try {
       await navigator.clipboard.writeText(text);
       $('copy').textContent = 'Скопійовано ✓';
@@ -165,11 +317,13 @@ https://nv.ua/ukr/...  (новинні сайти, які показують л�
 
   $('csv').addEventListener('click', () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lines = [['Рядок', 'Джерело', 'Посилання', 'Назва', 'Перегляди', 'Як знайдено', 'Помилка'].map(q).join(',')];
-    for (const r of lastResults) {
-      lines.push([r.line, r.platform, r.url, r.title, r.ok ? r.views : '', r.method, r.ok ? '' : r.error].map(q).join(','));
+    const out = [['Рядок', 'Джерело', 'Посилання', 'Назва', 'Перегляди', 'Як знайдено', 'Помилка'].map(q).join(',')];
+    for (const r of rows()) {
+      if (r.empty) { out.push([r.line].map(q).join(',')); continue; }
+      const method = r.ok ? r.method : r.manual ? 'вручну' : '';
+      out.push([r.line, r.platform, r.url, r.title, hasViews(r) ? r.views : '', method, r.ok || r.manual ? '' : r.error].map(q).join(','));
     }
-    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob(['﻿' + out.join('\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'views.csv';

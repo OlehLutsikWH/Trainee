@@ -47,9 +47,9 @@ test('detectPlatform recognises supported links', () => {
 });
 
 test('parseYouTubePage', () => {
-  const html = `<meta property="og:title" content="Rick Astley &amp; Friends">
+  const html = `<meta property="og:title" content="Rick's Astley &amp; Friends">
     <script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"x","viewCount":"1234567890"}};</script>`;
-  assert.deepEqual(parseYouTubePage(html), { views: 1234567890, title: 'Rick Astley & Friends' });
+  assert.deepEqual(parseYouTubePage(html), { views: 1234567890, title: "Rick's Astley & Friends" });
   assert.throws(() => parseYouTubePage('<html></html>'));
 });
 
@@ -94,7 +94,7 @@ test('getViews reports unsupported platforms without network calls', async () =>
   assert.equal(bad.error, 'Некоректне посилання');
   const priv = await getViews('https://t.me/c/1315782736/18737');
   assert.equal(priv.ok, false);
-  assert.match(priv.error, /приватний/);
+  assert.match(priv.error, /Приватний/);
 });
 
 test('parseGenericPage finds view counters on news sites', () => {
@@ -105,6 +105,14 @@ test('parseGenericPage finds view counters on news sites', () => {
   assert.equal(views('<p>Опубліковано 12.03.2026 10:15 · 1 525 переглядів</p>'), 1525);
   assert.equal(views('<span>Переглядів: 202</span>'), 202);
   assert.equal(parseGenericPage('<meta property="og:title" content="Новина"><b>Views 5</b>').title, 'Новина');
+  assert.equal(views('<span class="meta"><i class="fa fa-eye"></i> 1 360</span>'), 1360);
+  assert.equal(views('<span><svg class="ico"><use xlink:href="/img/sprite.svg#icon-eye"></use></svg> 205</span>'), 205);
+  assert.equal(views('<div class="stats" data-views="3200"></div>'), 3200);
+  assert.equal(views('<p>1,2 тис. переглядів</p>'), 1200);
+  assert.equal(views('<span class="views-count">12.5K</span>'), 12500);
+  assert.equal(views('<span>👁 861</span>'), 861);
+  assert.equal(views('<span>Переглянуто: 45</span>'), 45);
+  assert.equal(views('<script>window.__DATA__={"article":{"id":7,"views":2723,"title":"x"}}</script>'), 2723);
   // Look-alike classes and dates must not be taken as views
   assert.throws(() => parseGenericPage('<div class="preview">12</div><a class="viewport">5</a>'));
   assert.throws(() => parseGenericPage('<span class="views"><svg></svg></span><time>12.03.2026</time>'));
@@ -148,7 +156,7 @@ test('generic sites fall back to the page renderer', async (t) => {
   globalThis.fetch = async () => new Response('<p>no counter</p>');
   r = await getViews('https://news.example/d');
   assert.equal(r.ok, false);
-  assert.match(r.error, /вбудованому браузері/);
+  assert.match(r.error, /браузері/);
 });
 
 test('titles decode numeric and named entities', () => {
