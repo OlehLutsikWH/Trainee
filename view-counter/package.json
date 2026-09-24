@@ -1,0 +1,51 @@
+{
+  "name": "view-counter",
+  "version": "0.1.0",
+  "description": "Paste links to posts and get their view counts",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "desktop": "electron .",
+    "dist:win": "electron-builder --win",
+    "test": "node --test"
+  },
+  "productName": "View Counter",
+  "main": "electron/main.js",
+  "author": "OlehLutsikWH",
+  "build": {
+    "appId": "ua.trainee.viewcounter",
+    "productName": "View Counter",
+    "files": [
+      "electron/**",
+      "src/**",
+      "public/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "View-Counter-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "View-Counter-Portable-${version}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  }
+}
