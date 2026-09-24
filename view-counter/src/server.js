@@ -48,7 +48,7 @@ async function handleViews(req, res) {
   if (urls.length === 0) return sendJson(res, 400, { error: 'Додайте хоча б одне посилання' });
   if (urls.length > MAX_URLS) return sendJson(res, 400, { error: `Максимум ${MAX_URLS} посилань за раз` });
 
-  const results = await mapLimited(urls, CONCURRENCY, getViews);
+  const results = (await mapLimited(urls, CONCURRENCY, getViews)).flat();
   const totalViews = results.reduce((sum, r) => sum + (r.ok ? r.views : 0), 0);
   sendJson(res, 200, { totalViews, results });
 }

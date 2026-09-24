@@ -89,19 +89,25 @@ async function fetchYouTube(url, id) {
 
 // ---------- Telegram ----------
 
-// Supports t.me/channel/123 and t.me/s/channel/123
+const TELEGRAM_RESERVED = new Set(['joinchat', 'addstickers', 'addemoji', 'share', 'proxy', 'socks', 'iv', 'login']);
+
+// Post: t.me/channel/123, t.me/s/channel/123 -> "channel/123"
+// Channel feed: t.me/channel, t.me/s/channel?before=123 -> { feed: "channel", before: "123" }
 export function matchTelegram(url) {
   const host = url.hostname.replace(/^www\./, '');
   if (host !== 't.me' && host !== 'telegram.me') return null;
-  const m = url.pathname.match(/^\/(?:s\/)?([\w]+)\/(\d+)/);
-  return m ? `${m[1]}/${m[2]}` : null;
+  const post = url.pathname.match(/^\/(?:s\/)?(\w+)\/(\d+)/);
+  if (post) return `${post[1]}/${post[2]}`;
+  const feed = url.pathname.match(/^\/(?:s\/)?(\w+)\/?$/);
+  if (feed && !TELEGRAM_RESERVED.has(feed[1].toLowerCase())) {
+    return { feed: feed[1], before: url.searchParams.get('before') };
+  }
+  return null;
 }
 
-export function parseTelegramEmbed(html) {
+function parseTelegramMessage(html) {
   const m = html.match(/class="tgme_widget_message_views"[^>]*>([^<]+)</);
-  if (!m) {
-    throw new ViewsError('Не вдалося знайти перегляди: пост приватний, видалений або це не канал');
-  }
+  if (!m) return null;
   const views = parseCompactNumber(m[1]);
   if (views === null) throw new ViewsError(`Невідомий формат переглядів: ${m[1]}`);
   const text = html.match(/class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/);
@@ -111,7 +117,34 @@ export function parseTelegramEmbed(html) {
   return { views, title, approximate: /[KMB]/i.test(m[1]) };
 }
 
+export function parseTelegramEmbed(html) {
+  const result = parseTelegramMessage(html);
+  if (!result) {
+    throw new ViewsError('Не вдалося знайти перегляди: пост приватний, видалений або це не канал');
+  }
+  return result;
+}
+
+// Channel page (t.me/s/channel) lists the ~20 latest posts, each with its own view counter.
+export function parseTelegramFeed(html) {
+  const posts = [];
+  const chunks = html.split('data-post="').slice(1);
+  for (const chunk of chunks) {
+    const id = chunk.slice(0, chunk.indexOf('"'));
+    const parsed = parseTelegramMessage(chunk);
+    if (parsed && /^\w+\/\d+$/.test(id)) posts.push({ url: `https://t.me/${id}`, ...parsed });
+  }
+  if (posts.length === 0) {
+    throw new ViewsError('Не знайдено постів: канал приватний, порожній або це не канал');
+  }
+  return { posts };
+}
+
 async function fetchTelegram(url, id) {
+  if (typeof id === 'object') {
+    const before = id.before ? `?before=${encodeURIComponent(id.before)}` : '';
+    return parseTelegramFeed(await fetchText(`https://t.me/s/${id.feed}${before}`));
+  }
   return parseTelegramEmbed(await fetchText(`https://t.me/${id}?embed=1&mode=tme`));
 }
 
@@ -172,6 +205,7 @@ export function detectPlatform(rawUrl) {
   return { url, platform: null };
 }
 
+// Returns one result, or an array of results when the link expands into several posts.
 export async function getViews(rawUrl) {
   const { url, platform, id } = detectPlatform(rawUrl);
   const base = { url: rawUrl.trim() };
@@ -180,6 +214,8 @@ export async function getViews(rawUrl) {
   if (platform.unsupported) return { ...base, ok: false, platform: platform.name, error: platform.unsupported };
   try {
     const result = await platform.fetchViews(url, id);
+    // A channel link expands into one row per post
+    if (result.posts) return result.posts.map((post) => ({ ok: true, platform: platform.name, ...post }));
     return { ...base, ok: true, platform: platform.name, ...result };
   } catch (err) {
     const message = err instanceof ViewsError ? err.message

@@ -5,6 +5,7 @@ import {
   detectPlatform,
   parseYouTubePage,
   parseTelegramEmbed,
+  parseTelegramFeed,
   parseTikTokPage,
   getViews,
 } from '../src/platforms.js';
@@ -33,7 +34,12 @@ test('detectPlatform recognises supported links', () => {
     assert.equal(r.platform?.name, name, url);
     assert.equal(r.id, id, url);
   }
-  assert.equal(detectPlatform('https://t.me/durov').platform, null);
+  const feed = detectPlatform('https://t.me/s/oaembr46?before=1677');
+  assert.equal(feed.platform?.name, 'Telegram');
+  assert.deepEqual(feed.id, { feed: 'oaembr46', before: '1677' });
+  assert.deepEqual(detectPlatform('https://t.me/durov').id, { feed: 'durov', before: null });
+  assert.equal(detectPlatform('https://t.me/joinchat').platform, null);
+  assert.equal(detectPlatform('https://t.me/+AbCdEf').platform, null);
   assert.equal(detectPlatform('not a url').url, null);
 });
 
@@ -52,6 +58,22 @@ test('parseTelegramEmbed', () => {
   assert.equal(exact.views, 842);
   assert.equal(exact.approximate, false);
   assert.throws(() => parseTelegramEmbed('<div>no views</div>'));
+});
+
+test('parseTelegramFeed', () => {
+  const html = `
+    <div class="tgme_widget_message_wrap"><div class="tgme_widget_message" data-post="chan/1675">
+      <div class="tgme_widget_message_text js-message_text">First &amp; post</div>
+      <span class="tgme_widget_message_views">12.3K</span></div></div>
+    <div class="tgme_widget_message_wrap"><div class="tgme_widget_message service_message" data-post="chan/1676">
+      <div class="tgme_widget_message_text">Channel created</div></div></div>
+    <div class="tgme_widget_message_wrap"><div class="tgme_widget_message" data-post="chan/1677">
+      <span class="tgme_widget_message_views">540</span></div></div>`;
+  assert.deepEqual(parseTelegramFeed(html).posts, [
+    { url: 'https://t.me/chan/1675', views: 12300, title: 'First & post', approximate: true },
+    { url: 'https://t.me/chan/1677', views: 540, title: null, approximate: false },
+  ]);
+  assert.throws(() => parseTelegramFeed('<html></html>'));
 });
 
 test('parseTikTokPage', () => {
