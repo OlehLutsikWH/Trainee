@@ -7,6 +7,7 @@ import {
   parseTelegramEmbed,
   parseTelegramFeed,
   parseTikTokPage,
+  parseGenericPage,
   getViews,
 } from '../src/platforms.js';
 
@@ -38,6 +39,7 @@ test('detectPlatform recognises supported links', () => {
   assert.equal(feed.platform?.name, 'Telegram');
   assert.deepEqual(feed.id, { feed: 'oaembr46', before: '1677' });
   assert.deepEqual(detectPlatform('https://t.me/durov').id, { feed: 'durov', before: null });
+  assert.deepEqual(detectPlatform('https://t.me/c/1315782736/18737').id, { private: true });
   assert.equal(detectPlatform('https://t.me/joinchat').platform, null);
   assert.equal(detectPlatform('https://t.me/+AbCdEf').platform, null);
   assert.equal(detectPlatform('not a url').url, null);
@@ -89,7 +91,21 @@ test('getViews reports unsupported platforms without network calls', async () =>
   const bad = await getViews('hello');
   assert.equal(bad.ok, false);
   assert.equal(bad.error, 'Некоректне посилання');
-  const unknown = await getViews('https://example.com/post/1');
-  assert.equal(unknown.ok, false);
-  assert.equal(unknown.platform, 'example.com');
+  const priv = await getViews('https://t.me/c/1315782736/18737');
+  assert.equal(priv.ok, false);
+  assert.match(priv.error, /приватний/);
+});
+
+test('parseGenericPage finds view counters on news sites', () => {
+  const views = (html) => parseGenericPage(html).views;
+  assert.equal(views('<script type="application/ld+json">{"interactionStatistic":{"interactionType":"https://schema.org/ViewAction","userInteractionCount":"18462"}}</script>'), 18462);
+  assert.equal(views('<div class="article__views"><i class="icon"></i> 3 641 </div>'), 3641);
+  assert.equal(views('<span class="post-views-count">766</span>'), 766);
+  assert.equal(views('<p>Опубліковано 12.03.2026 10:15 · 1 525 переглядів</p>'), 1525);
+  assert.equal(views('<span>Переглядів: 202</span>'), 202);
+  assert.equal(parseGenericPage('<meta property="og:title" content="Новина"><b>Views 5</b>').title, 'Новина');
+  // Look-alike classes and dates must not be taken as views
+  assert.throws(() => parseGenericPage('<div class="preview">12</div><a class="viewport">5</a>'));
+  assert.throws(() => parseGenericPage('<span class="views"><svg></svg></span><time>12.03.2026</time>'));
+  assert.throws(() => parseGenericPage('<p>Nothing here 2026</p>'));
 });

@@ -93,9 +93,11 @@ const TELEGRAM_RESERVED = new Set(['joinchat', 'addstickers', 'addemoji', 'share
 
 // Post: t.me/channel/123, t.me/s/channel/123 -> "channel/123"
 // Channel feed: t.me/channel, t.me/s/channel?before=123 -> { feed: "channel", before: "123" }
+// Private channel post: t.me/c/123/456 -> { private: true }
 export function matchTelegram(url) {
   const host = url.hostname.replace(/^www\./, '');
   if (host !== 't.me' && host !== 'telegram.me') return null;
+  if (/^\/c\//.test(url.pathname)) return { private: true };
   const post = url.pathname.match(/^\/(?:s\/)?(\w+)\/(\d+)/);
   if (post) return `${post[1]}/${post[2]}`;
   const feed = url.pathname.match(/^\/(?:s\/)?(\w+)\/?$/);
@@ -141,9 +143,14 @@ export function parseTelegramFeed(html) {
 }
 
 async function fetchTelegram(url, id) {
-  if (typeof id === 'object') {
+  if (id.private) {
+    throw new ViewsError('Це приватний канал (t.me/c/…) — перегляди видно лише його учасникам');
+  }
+  if (id.feed) {
     const before = id.before ? `?before=${encodeURIComponent(id.before)}` : '';
-    return parseTelegramFeed(await fetchText(`https://t.me/s/${id.feed}${before}`));
+    const feed = parseTelegramFeed(await fetchText(`https://t.me/s/${id.feed}${before}`));
+    // t.me/s/channel?before=N opens the page scrolled to the last post before N — that's the post meant
+    return id.before ? feed.posts[feed.posts.length - 1] : feed;
   }
   return parseTelegramEmbed(await fetchText(`https://t.me/${id}?embed=1&mode=tme`));
 }
@@ -175,6 +182,59 @@ export function parseTikTokPage(html) {
 
 async function fetchTikTok(url) {
   return parseTikTokPage(await fetchText(url.href));
+}
+
+// ---------- Any other website (news sites etc.) ----------
+
+const VIEW_WORDS = 'переглядів|перегляди|перегляд|просмотров|просмотра|просмотры|просмотр|views|view';
+
+function toInt(str) {
+  const n = Number(String(str).replace(/[\s\u00a0\u202f.,]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function pageText(html) {
+  return decodeHtml(
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' '),
+  ).replace(/\s+/g, ' ');
+}
+
+// Many news sites print a view counter on the article page. Tries, in order of reliability:
+// schema.org interaction statistics, a "views" element in the markup, then "N переглядів" in the text.
+export function parseGenericPage(html) {
+  const title = metaContent(html, 'og:title');
+  const found = (views, method) => ({ views, title, method });
+
+  const ld =
+    html.match(/"interactionType"\s*:\s*"[^"]*(?:WatchAction|ViewAction|ReadAction)"[^}]*?"userInteractionCount"\s*:\s*"?(\d+)/) ||
+    html.match(/"userInteractionCount"\s*:\s*"?(\d+)"?[^}]*?"interactionType"\s*:\s*"[^"]*(?:WatchAction|ViewAction|ReadAction)"/) ||
+    html.match(/itemprop=["']interactionCount["'][^>]*content=["'](?:UserPageVisits|UserViews):(\d+)/i);
+  if (ld) return found(Number(ld[1]), 'schema.org');
+
+  // An element whose class names it a view counter, e.g. "article__views" or "post-views-count",
+  // whose first text is the number.
+  for (const m of html.matchAll(/<[a-z][^>]*\sclass=["']([^"']*)["'][^>]*>/gi)) {
+    if (!/(?:^|[\s_-])(?:views?|eye|перегляд\w*)(?:$|[\s_-])/i.test(m[1])) continue;
+    const after = pageText(html.slice(m.index + m[0].length, m.index + m[0].length + 400));
+    const num = after.match(/^\s*(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?![\d.,:\/])/);
+    if (num) return found(toInt(num[1]), 'лічильник на сторінці');
+  }
+
+  const text = pageText(html);
+  const before = text.match(new RegExp(`(?:^|[^\\wа-яіїєґ])(?:${VIEW_WORDS})\\s*:?\\s*(\\d[\\d \\u00a0\\u202f]{0,12})(?![\\d])`, 'i'));
+  const after = text.match(new RegExp(`(?:^|[^\\d.,])(\\d{1,3}(?:[ \\u00a0\\u202f]\\d{3})+|\\d+)\\s*(?:${VIEW_WORDS})(?![а-яіїєґa-z])`, 'i'));
+  const m = after || before;
+  if (m && toInt(m[1]) !== null) return found(toInt(m[1]), 'текст сторінки');
+
+  throw new ViewsError('Сайт не показує кількість переглядів (або підвантажує її скриптом)');
+}
+
+async function fetchGeneric(url) {
+  return parseGenericPage(await fetchText(url.href));
 }
 
 // ---------- Registry ----------
@@ -210,7 +270,13 @@ export async function getViews(rawUrl) {
   const { url, platform, id } = detectPlatform(rawUrl);
   const base = { url: rawUrl.trim() };
   if (!url) return { ...base, ok: false, error: 'Некоректне посилання' };
-  if (!platform) return { ...base, ok: false, platform: url.hostname, error: 'Платформа поки не підтримується' };
+  if (!platform) {
+    try {
+      return { ...base, ok: true, platform: url.hostname.replace(/^www\./, ''), ...(await fetchGeneric(url)) };
+    } catch (err) {
+      return { ...base, ok: false, platform: url.hostname.replace(/^www\./, ''), error: errorMessage(err) };
+    }
+  }
   if (platform.unsupported) return { ...base, ok: false, platform: platform.name, error: platform.unsupported };
   try {
     const result = await platform.fetchViews(url, id);
@@ -218,9 +284,12 @@ export async function getViews(rawUrl) {
     if (result.posts) return result.posts.map((post) => ({ ok: true, platform: platform.name, ...post }));
     return { ...base, ok: true, platform: platform.name, ...result };
   } catch (err) {
-    const message = err instanceof ViewsError ? err.message
-      : err.name === 'TimeoutError' ? 'Сторінка не відповіла вчасно'
-      : `Помилка запиту: ${err.message}`;
-    return { ...base, ok: false, platform: platform.name, error: message };
+    return { ...base, ok: false, platform: platform.name, error: errorMessage(err) };
   }
+}
+
+function errorMessage(err) {
+  if (err instanceof ViewsError) return err.message;
+  if (err.name === 'TimeoutError') return 'Сторінка не відповіла вчасно';
+  return `Помилка запиту: ${err.cause?.code ?? err.message}`;
 }

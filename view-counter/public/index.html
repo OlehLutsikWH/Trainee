@@ -59,11 +59,14 @@
     <textarea id="urls" placeholder="Одне посилання на рядок, наприклад:
 https://www.youtube.com/watch?v=dQw4w9WgXcQ
 https://t.me/durov/300
-https://t.me/s/durov  (останні пости каналу)
-https://www.tiktok.com/@user/video/1234567890"></textarea>
+https://t.me/s/durov
+https://www.tiktok.com/@user/video/1234567890
+https://nv.ua/ukr/...  (новинні сайти, які показують лічильник)
+
+Можна вставити цілу колонку з Excel — порядок рядків збережеться."></textarea>
     <div class="row">
       <button id="go">Порахувати перегляди</button>
-      <span class="hint">Підтримується: YouTube, Telegram (пости або цілий публічний канал), TikTok</span>
+      <span class="hint" id="status">YouTube, Telegram, TikTok і новинні сайти з лічильником переглядів</span>
     </div>
   </section>
 
@@ -73,11 +76,14 @@ https://www.tiktok.com/@user/video/1234567890"></textarea>
         <div class="muted">Загалом переглядів</div>
         <div class="total" id="total">0</div>
       </div>
-      <button class="secondary" id="csv">Завантажити CSV</button>
+      <div class="row" style="margin-top: 0;">
+        <button class="secondary" id="copy" title="Скопіювати перегляди по рядках, щоб вставити в колонку Excel">Копіювати колонку переглядів</button>
+        <button class="secondary" id="csv">Завантажити CSV</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Платформа</th><th>Пост</th><th class="num">Перегляди</th></tr></thead>
+        <thead><tr><th>#</th><th>Джерело</th><th>Пост</th><th class="num">Перегляди</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -97,8 +103,10 @@ https://www.tiktok.com/@user/video/1234567890"></textarea>
   function render({ totalViews, results }) {
     lastResults = results;
     $('total').textContent = fmt(totalViews);
-    $('rows').innerHTML = results.map((r) => `
+    $('rows').innerHTML = results.map((r) => r.empty ? `
+      <tr><td class="muted">${r.line}</td><td colspan="3" class="muted">порожній рядок</td></tr>` : `
       <tr>
+        <td class="muted">${r.line}</td>
         <td>${escapeHtml(r.platform ?? '—')}</td>
         <td>
           ${r.title ? `<div>${escapeHtml(r.title)}</div>` : ''}
@@ -112,11 +120,13 @@ https://www.tiktok.com/@user/video/1234567890"></textarea>
   }
 
   $('go').addEventListener('click', async () => {
-    const urls = $('urls').value.split(/\s+/).filter(Boolean);
-    if (!urls.length) return $('urls').focus();
+    // One line = one row, blank lines kept so the order matches the spreadsheet
+    const urls = $('urls').value.replace(/\s+$/, '').split(/\r?\n/).map((l) => l.trim());
+    if (!urls.some(Boolean)) return $('urls').focus();
     const btn = $('go');
     btn.disabled = true;
     btn.textContent = 'Рахую…';
+    $('status').textContent = `Перевіряю ${urls.filter(Boolean).length} посилань, це може зайняти кілька хвилин…`;
     try {
       const res = await fetch('/api/views', {
         method: 'POST',
@@ -131,14 +141,32 @@ https://www.tiktok.com/@user/video/1234567890"></textarea>
     } finally {
       btn.disabled = false;
       btn.textContent = 'Порахувати перегляди';
+      $('status').textContent = 'YouTube, Telegram, TikTok і новинні сайти з лічильником переглядів';
+    }
+  });
+
+  // One value per input line (sum if a channel link expanded into several posts), blank when not found
+  $('copy').addEventListener('click', async () => {
+    const byLine = new Map();
+    for (const r of lastResults) {
+      if (!byLine.has(r.line)) byLine.set(r.line, '');
+      if (r.ok) byLine.set(r.line, (Number(byLine.get(r.line)) || 0) + r.views);
+    }
+    const text = [...byLine.keys()].sort((a, b) => a - b).map((l) => byLine.get(l)).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      $('copy').textContent = 'Скопійовано ✓';
+      setTimeout(() => { $('copy').textContent = 'Копіювати колонку переглядів'; }, 2000);
+    } catch {
+      alert('Не вдалося скопіювати. Скористайтеся кнопкою «Завантажити CSV».');
     }
   });
 
   $('csv').addEventListener('click', () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lines = [['Платформа', 'Посилання', 'Назва', 'Перегляди', 'Помилка'].map(q).join(',')];
+    const lines = [['Рядок', 'Джерело', 'Посилання', 'Назва', 'Перегляди', 'Помилка'].map(q).join(',')];
     for (const r of lastResults) {
-      lines.push([r.platform, r.url, r.title, r.ok ? r.views : '', r.ok ? '' : r.error].map(q).join(','));
+      lines.push([r.line, r.platform, r.url, r.title, r.ok ? r.views : '', r.ok ? '' : r.error].map(q).join(','));
     }
     const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');

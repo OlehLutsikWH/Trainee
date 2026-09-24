@@ -5,8 +5,8 @@ import path from 'node:path';
 import { getViews } from './platforms.js';
 
 const PORT = Number(process.env.PORT) || 3000;
-const MAX_URLS = 100;
-const CONCURRENCY = 4;
+const MAX_URLS = 1000;
+const CONCURRENCY = 6;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
 async function mapLimited(items, limit, fn) {
@@ -44,12 +44,27 @@ async function handleViews(req, res) {
     return sendJson(res, 400, { error: 'Очікується JSON: { "urls": [...] }' });
   }
   if (!Array.isArray(urls)) return sendJson(res, 400, { error: 'Поле "urls" має бути масивом' });
-  urls = [...new Set(urls.map(String).map((u) => u.trim()).filter(Boolean))];
-  if (urls.length === 0) return sendJson(res, 400, { error: 'Додайте хоча б одне посилання' });
-  if (urls.length > MAX_URLS) return sendJson(res, 400, { error: `Максимум ${MAX_URLS} посилань за раз` });
+  // Keep every line (blank ones too) so results line up with rows pasted from a spreadsheet
+  urls = urls.map((u) => String(u ?? '').trim());
+  if (!urls.some(Boolean)) return sendJson(res, 400, { error: 'Додайте хоча б одне посилання' });
+  if (urls.length > MAX_URLS) return sendJson(res, 400, { error: `Максимум ${MAX_URLS} рядків за раз` });
 
-  const results = (await mapLimited(urls, CONCURRENCY, getViews)).flat();
-  const totalViews = results.reduce((sum, r) => sum + (r.ok ? r.views : 0), 0);
+  const unique = [...new Set(urls.filter(Boolean))];
+  const fetched = await mapLimited(unique, CONCURRENCY, getViews);
+  const byUrl = new Map(unique.map((u, i) => [u, fetched[i]]));
+
+  const results = urls.flatMap((u, i) => {
+    const line = i + 1;
+    if (!u) return [{ line, url: '', ok: false, empty: true }];
+    return [byUrl.get(u)].flat().map((r) => ({ line, ...r }));
+  });
+  // Count each post once even if the same link was pasted twice
+  const counted = new Set();
+  const totalViews = results.reduce((sum, r) => {
+    if (!r.ok || counted.has(r.url)) return sum;
+    counted.add(r.url);
+    return sum + r.views;
+  }, 0);
   sendJson(res, 200, { totalViews, results });
 }
 
