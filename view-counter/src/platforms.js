@@ -7,7 +7,12 @@ const USER_AGENT =
 
 const REQUEST_TIMEOUT_MS = 15000;
 
-export class ViewsError extends Error {}
+export class ViewsError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
 
 async function fetchText(url) {
   const res = await fetch(url, {
@@ -15,16 +20,23 @@ async function fetchText(url) {
     redirect: 'follow',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!res.ok) throw new ViewsError(`Сторінка відповіла кодом ${res.status}`);
+  if (!res.ok) {
+    const hint = res.status === 403 ? ' (сайт заблокував автоматичний запит)' : res.status === 404 ? ' (сторінку не знайдено)' : '';
+    throw new ViewsError(`Сторінка відповіла кодом ${res.status}${hint}`, res.status);
+  }
   return res.text();
 }
 
+const NAMED_ENTITIES = {
+  quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ', bull: '•', ndash: '–', mdash: '—',
+  laquo: '«', raquo: '»', hellip: '…', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '„',
+};
+
 function decodeHtml(str) {
   return str
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&#039;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([\da-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m)
     .replace(/&amp;/g, '&');
 }
 
@@ -34,7 +46,7 @@ function metaContent(html, name) {
     'i',
   );
   const m = html.match(re);
-  return m ? decodeHtml(m[1]) : null;
+  return m ? decodeHtml(m[1]).replace(/\s+/g, ' ').trim() : null;
 }
 
 // "1.2K" -> 1200, "3,4M" -> 3400000, "987" -> 987
@@ -233,8 +245,47 @@ export function parseGenericPage(html) {
   throw new ViewsError('Сайт не показує кількість переглядів (або підвантажує її скриптом)');
 }
 
+// Optional: a real browser that renders the page (runs its scripts) and hands back the HTML.
+// Set by the desktop app; the plain web version works without it.
+let pageRenderer = null;
+
+// renderer(url, extract) must load the page and call extract(html) until it returns a result
+// or gives up, resolving with that result or null.
+export function setPageRenderer(renderer) {
+  pageRenderer = renderer;
+}
+
+function tryParseGeneric(html) {
+  try {
+    const result = parseGenericPage(html);
+    return result.views > 0 ? result : null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchGeneric(url) {
-  return parseGenericPage(await fetchText(url.href));
+  let quick = null;
+  let quickError = null;
+  try {
+    quick = parseGenericPage(await fetchText(url.href));
+    // Many sites print 0 in the HTML and fill the real number in with a script
+    if (quick.views > 0) return quick;
+  } catch (err) {
+    quickError = err;
+  }
+
+  const pageMissing = quickError?.status === 404 || quickError?.status === 410 || isDnsError(quickError);
+  if (pageRenderer && !pageMissing) {
+    const rendered = await pageRenderer(url.href, tryParseGeneric);
+    if (rendered) return { ...rendered, method: `браузер: ${rendered.method}` };
+  }
+
+  if (quick) return quick;
+  if (pageRenderer && !pageMissing) {
+    throw new ViewsError('Сайт не показує кількість переглядів (перевірено й у вбудованому браузері)');
+  }
+  throw quickError;
 }
 
 // ---------- Registry ----------
@@ -288,8 +339,13 @@ export async function getViews(rawUrl) {
   }
 }
 
+function isDnsError(err) {
+  return ['ENOTFOUND', 'ENOENT', 'EAI_AGAIN'].includes(err?.cause?.code);
+}
+
 function errorMessage(err) {
   if (err instanceof ViewsError) return err.message;
   if (err.name === 'TimeoutError') return 'Сторінка не відповіла вчасно';
+  if (isDnsError(err)) return 'Сайт недоступний (домен не знайдено)';
   return `Помилка запиту: ${err.cause?.code ?? err.message}`;
 }

@@ -9,6 +9,7 @@ import {
   parseTikTokPage,
   parseGenericPage,
   getViews,
+  setPageRenderer,
 } from '../src/platforms.js';
 
 test('parseCompactNumber', () => {
@@ -108,4 +109,51 @@ test('parseGenericPage finds view counters on news sites', () => {
   assert.throws(() => parseGenericPage('<div class="preview">12</div><a class="viewport">5</a>'));
   assert.throws(() => parseGenericPage('<span class="views"><svg></svg></span><time>12.03.2026</time>'));
   assert.throws(() => parseGenericPage('<p>Nothing here 2026</p>'));
+});
+
+test('generic sites fall back to the page renderer', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    setPageRenderer(null);
+  });
+  const rendered = [];
+  setPageRenderer(async (url, extract) => {
+    rendered.push(url);
+    return extract('<meta property="og:title" content="Стаття"><span class="post-views">1 234</span>');
+  });
+
+  // Counter filled in by a script: the raw HTML says 0
+  globalThis.fetch = async () => new Response('<span class="views">0</span>');
+  let r = await getViews('https://news.example/a');
+  assert.equal(r.ok, true);
+  assert.equal(r.views, 1234);
+  assert.equal(r.title, 'Стаття');
+  assert.match(r.method, /^браузер/);
+
+  // Site blocks plain requests
+  globalThis.fetch = async () => new Response('Forbidden', { status: 403 });
+  r = await getViews('https://news.example/b');
+  assert.equal(r.views, 1234);
+
+  // Missing page: no point opening a browser
+  globalThis.fetch = async () => new Response('Not found', { status: 404 });
+  r = await getViews('https://news.example/c');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /404/);
+  assert.deepEqual(rendered, ['https://news.example/a', 'https://news.example/b']);
+
+  // Browser finds nothing either
+  setPageRenderer(async (url, extract) => extract('<p>no counter</p>'));
+  globalThis.fetch = async () => new Response('<p>no counter</p>');
+  r = await getViews('https://news.example/d');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /вбудованому браузері/);
+});
+
+test('titles decode numeric and named entities', () => {
+  const { title } = parseTelegramEmbed(
+    '<div class="tgme_widget_message_text">Привіт&#33; Це &laquo;тест&raquo; &#8211; так</div><span class="tgme_widget_message_views">5</span>',
+  );
+  assert.equal(title, 'Привіт! Це «тест» – так');
 });

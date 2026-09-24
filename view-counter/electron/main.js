@@ -1,5 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron';
 import { startServer } from '../src/server.js';
+import { setPageRenderer } from '../src/platforms.js';
+import { createPageRenderer } from './page-renderer.js';
 
 // Desktop wrapper: runs the same local server on a free port and shows the page in an app window.
 
@@ -8,6 +10,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 let win;
 
 async function createWindow() {
+  setPageRenderer(createPageRenderer());
   const port = await startServer(0);
   win = new BrowserWindow({
     width: 1100,
