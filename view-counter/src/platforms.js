@@ -223,6 +223,43 @@ function pageText(html) {
   ).replace(/\s+/g, ' ');
 }
 
+// An element marked as a view counter — by class ("article__views", "fa-eye", "post-views-count")
+// or an eye icon (<use href="#icon-eye">) — followed by the number.
+function findMarkedCounter(html) {
+  const markers = /<[a-z][^>]*\sclass=["']([^"']*)["'][^>]*>|<(?:use|img|svg)[^>]*(?:href|src)=["']([^"']*)["'][^>]*>/gi;
+  const countFirst = new RegExp(`^\\s*(?:👁️?\\s*)?${COUNT}(?![\\d.,:/])`, 'i');
+  for (const m of html.matchAll(markers)) {
+    const isCounter = m[1] !== undefined
+      ? /(?:^|[\s_-])(?:views?|eye|перегляд\w*|hits|watch(?:ed)?)(?:$|[\s_-])/i.test(m[1])
+      : /(?:^|[#/_-])(?:icon-)?(?:eye|views?)(?:$|[._-])/i.test(m[2]);
+    if (!isCounter) continue;
+    const after = pageText(html.slice(m.index + m[0].length, m.index + m[0].length + 400));
+    const num = after.match(countFirst);
+    if (num) return toInt(num[1]);
+  }
+  return null;
+}
+
+function findCounterInText(text) {
+  const eye = text.match(new RegExp(`👁️?\\s*${COUNT}`, 'i'));
+  const before = text.match(new RegExp(`(?:^|[^\\wа-яіїєґ])(?:${VIEW_WORDS})\\s*:?\\s*${COUNT}(?![\\d])`, 'i'));
+  const after = text.match(new RegExp(`(?:^|[^\\d.,])${COUNT}\\s*(?:${VIEW_WORDS})(?![а-яіїєґa-z])`, 'i'));
+  const m = after || before || eye;
+  return m ? toInt(m[1]) : null;
+}
+
+// The first number in a piece of text, e.g. the counter element a user pointed at: "👁 3 641" -> 3641
+export function parseCountText(text) {
+  const m = String(text ?? '').match(new RegExp(COUNT, 'i'));
+  return m ? toInt(m[1]) : null;
+}
+
+// Whether a clicked element plausibly is a view counter: has a number and isn't a date or time
+export function isCounterText(text) {
+  const t = String(text ?? '');
+  return parseCountText(t) !== null && !/\d{1,2}[.:/]\d{1,2}(?:[.:/]\d{2,4})?/.test(t);
+}
+
 // Many news sites print a view counter on the article page. Tries, in order of reliability:
 // schema.org interaction statistics, a "views" element in the markup, then "N переглядів" in the text.
 export function parseGenericPage(html) {
@@ -238,30 +275,20 @@ export function parseGenericPage(html) {
   const attr = html.match(/\sdata-(?:views|view-count|views-count|post-views|count-views)=["'](\d+)["']/i);
   if (attr) return found(Number(attr[1]), 'лічильник на сторінці');
 
-  // An element marked as a view counter — by class ("article__views", "fa-eye", "post-views-count")
-  // or an eye icon (<use href="#icon-eye">) — followed by the number.
-  const markers = /<[a-z][^>]*\sclass=["']([^"']*)["'][^>]*>|<(?:use|img|svg)[^>]*(?:href|src)=["']([^"']*)["'][^>]*>/gi;
-  const countFirst = new RegExp(`^\\s*(?:👁️?\\s*)?${COUNT}(?![\\d.,:/])`, 'i');
-  for (const m of html.matchAll(markers)) {
-    const isCounter = m[1] !== undefined
-      ? /(?:^|[\s_-])(?:views?|eye|перегляд\w*|hits|watch(?:ed)?)(?:$|[\s_-])/i.test(m[1])
-      : /(?:^|[#/_-])(?:icon-)?(?:eye|views?)(?:$|[._-])/i.test(m[2]);
-    if (!isCounter) continue;
-    const after = pageText(html.slice(m.index + m[0].length, m.index + m[0].length + 400));
-    const num = after.match(countFirst);
-    if (num) return found(toInt(num[1]), 'лічильник на сторінці');
-  }
+  // Sidebars ("popular news") often show other articles' views before the article itself,
+  // so look after the article heading first and only then across the whole page.
+  const h1 = html.search(/<h1[\s>]/i);
+  const fromTitle = h1 > 0 ? html.slice(h1) : null;
+
+  const marked = (fromTitle && findMarkedCounter(fromTitle)) ?? findMarkedCounter(html);
+  if (marked !== null) return found(marked, 'лічильник на сторінці');
 
   // Counters kept in the page's embedded JSON (common on sites built with JS frameworks)
   const json = html.match(/"(?:views|viewsCount|views_count|view_count|viewCounter|pageviews|pageViews|page_views|hits|read_count|readCount)"\s*:\s*"?(\d+)"?[,}]/);
   if (json && Number(json[1]) > 0) return found(Number(json[1]), 'дані сторінки');
 
-  const text = pageText(html);
-  const eye = text.match(new RegExp(`👁️?\\s*${COUNT}`, 'i'));
-  const before = text.match(new RegExp(`(?:^|[^\\wа-яіїєґ])(?:${VIEW_WORDS})\\s*:?\\s*${COUNT}(?![\\d])`, 'i'));
-  const after = text.match(new RegExp(`(?:^|[^\\d.,])${COUNT}\\s*(?:${VIEW_WORDS})(?![а-яіїєґa-z])`, 'i'));
-  const m = after || before || eye;
-  if (m && toInt(m[1]) !== null) return found(toInt(m[1]), 'текст сторінки');
+  const inText = (fromTitle && findCounterInText(pageText(fromTitle))) ?? findCounterInText(pageText(html));
+  if (inText !== null) return found(inText, 'текст сторінки');
 
   throw new ViewsError('Лічильника на сторінці не знайдено');
 }
@@ -270,8 +297,9 @@ export function parseGenericPage(html) {
 // Set by the desktop app; the plain web version works without it.
 let pageRenderer = null;
 
-// renderer(url, extract) must load the page and call extract(html) until it returns a result
-// or gives up, resolving with that result or null.
+// renderer(url, extract, rule?) must load the page and call extract(html) until it returns a result
+// or gives up, resolving with that result or null. With a rule ({ selector, index }) it passes the
+// text of that element instead of the whole page.
 export function setPageRenderer(renderer) {
   pageRenderer = renderer;
 }
@@ -285,7 +313,28 @@ function tryParseGeneric(html) {
   }
 }
 
+// Where a user has shown the app the counter on a site: host -> { selector, index }.
+// Set by the desktop app, which keeps these rules between runs.
+let siteRules = null;
+
+export function setSiteRules(rules) {
+  siteRules = rules;
+}
+
+export function siteKey(url) {
+  return new URL(url).hostname.replace(/^www\./, '');
+}
+
 async function fetchGeneric(url) {
+  const rule = siteRules?.get(siteKey(url.href));
+  if (rule && pageRenderer) {
+    const picked = await pageRenderer(url.href, (text) => {
+      const views = parseCountText(text);
+      return views === null ? null : { views };
+    }, rule);
+    if (picked) return { ...picked, title: picked.title ?? null, method: 'за вказаним зразком' };
+  }
+
   let quick = null;
   let quickError = null;
   try {
@@ -302,7 +351,7 @@ async function fetchGeneric(url) {
     if (rendered) return { ...rendered, method: `браузер: ${rendered.method}` };
   }
 
-  if (quick) return quick;
+  if (quick) return { ...quick, method: `${quick.method}: показує 0 — перевірте` };
   if (pageRenderer && !pageMissing) {
     throw new ViewsError('Лічильника на сторінці немає (перевірено й у браузері)');
   }

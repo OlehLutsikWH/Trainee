@@ -79,6 +79,11 @@
     }
     input.manual:focus { outline: none; border-style: solid; border-color: var(--accent); }
     input.manual.filled { border-style: solid; border-color: var(--warn); }
+    .teach {
+      display: inline-block; margin-top: 4px; padding: 3px 8px; font-size: 12px; border-radius: 6px;
+      background: transparent; color: var(--accent); border: 1px solid var(--border);
+    }
+    .teach.subtle { border-color: transparent; padding: 0; color: var(--muted); text-decoration: underline; }
     [hidden] { display: none !important; }
 
     @media (max-width: 800px) {
@@ -126,7 +131,7 @@ https://nv.ua/ukr/..."></textarea>
         <button class="chip" data-filter="ok">Знайдено</button>
         <button class="chip" data-filter="missing">Не знайдено</button>
       </div>
-      <span class="hint">Де цифру не знайдено — впишіть її вручну в колонці «Перегляди», вона піде в копію та CSV.</span>
+      <span class="hint" id="table-hint">Де цифру не знайдено — впишіть її вручну в колонці «Перегляди», вона піде в копію та CSV.</span>
     </div>
     <table>
       <colgroup><col class="c-line"><col class="c-source"><col><col class="c-views"><col class="c-note"></colgroup>
@@ -146,7 +151,19 @@ https://nv.ua/ukr/..."></textarea>
   let manual = new Map();
   let filter = 'all';
   let controller = null;
-  let expected = 0;
+  let batch = new Set();   // URLs being checked right now
+  let batchDone = new Set(); // ...and the ones of them already answered
+  let canTeach = false;    // desktop app: user can point at the counter on a page
+
+  fetch('/api/capabilities').then((r) => r.json()).then((c) => {
+    canTeach = !!c.teach;
+    if (canTeach) {
+      $('table-hint').textContent = 'Де цифру не знайдено — натисніть «Вказати на сторінці» й клацніть на лічильник: програма запам\'ятає сайт і перерахує всі його посилання. Або впишіть число вручну.';
+    }
+  }).catch(() => {});
+
+  const siteOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } };
+  const PLATFORMS = new Set(['YouTube', 'Telegram', 'TikTok', 'Instagram', 'Facebook', 'X (Twitter)']);
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -159,7 +176,7 @@ https://nv.ua/ukr/..."></textarea>
       const line = i + 1;
       if (!url) return [{ line, empty: true }];
       const r = byUrl.get(url);
-      if (!r) return [{ line, url, pending: true }];
+      if (!r || (batch.has(url) && !batchDone.has(url))) return [{ line, url, pending: true, platform: r?.platform }];
       return [r].flat().map((x) => {
         const key = `${line}|${x.url}`;
         const typed = manual.get(key);
@@ -181,8 +198,7 @@ https://nv.ua/ukr/..."></textarea>
     const withUrl = all.filter((r) => !r.empty);
     $('total').textContent = fmt(total);
     $('found').textContent = `${withUrl.filter(hasViews).length} з ${withUrl.length}`;
-    const done = new Set(lines.filter((u) => u && byUrl.has(u))).size;
-    $('progress').firstElementChild.style.width = expected ? `${(done / expected) * 100}%` : '0';
+    $('progress').firstElementChild.style.width = batch.size ? `${(batchDone.size / batch.size) * 100}%` : '0';
     $('progress').hidden = !controller;
   }
 
@@ -198,11 +214,17 @@ https://nv.ua/ukr/..."></textarea>
     } else if (r.ok) {
       views = `<span class="views">${r.approximate ? '≈ ' : ''}${fmt(r.views)}</span>`;
       note = `<span class="note">${escapeHtml(r.method || '')}</span>`;
+      if (canTeach && !PLATFORMS.has(r.platform)) {
+        note += `<br><button class="teach subtle" data-url="${escapeHtml(r.url)}">не те число? вказати</button>`;
+      }
     } else {
       views = `<input class="manual${r.manual ? ' filled' : ''}" data-key="${escapeHtml(r.key)}" inputmode="numeric" placeholder="вписати" value="${r.manual ? r.views : ''}">`;
       note = r.manual
         ? '<span class="note manual">вписано вручну</span>'
         : `<span class="note err">${escapeHtml(r.error)}</span>`;
+      if (canTeach && !PLATFORMS.has(r.platform) && !/404|недоступний|Некоректне/.test(r.error)) {
+        note += `<br><button class="teach" data-url="${escapeHtml(r.url)}">Вказати на сторінці</button>`;
+      }
     }
     return `<tr>
       <td class="line">${r.line}</td>
@@ -249,24 +271,18 @@ https://nv.ua/ukr/..."></textarea>
     $('urls').readOnly = running;
   }
 
-  $('go').addEventListener('click', async () => {
-    // One line = one row, blank lines kept so the order matches the spreadsheet
-    const input = $('urls').value.replace(/\s+$/, '').split(/\r?\n/).map((l) => l.trim());
-    if (!input.some(Boolean)) return $('urls').focus();
-    lines = input;
-    byUrl = new Map();
-    manual = new Map();
-    expected = new Set(lines.filter(Boolean)).size;
+  // Checks the given URLs, streaming results into byUrl as they arrive
+  async function check(urls) {
+    batch = new Set(urls);
+    batchDone = new Set();
     controller = new AbortController();
     setRunning(true);
-    $('status').textContent = `Перевіряю ${expected} посилань. Складні сайти відкриваються у вбудованому браузері — це може зайняти кілька хвилин.`;
     render();
-
     try {
       const res = await fetch('/api/views', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls: lines }),
+        body: JSON.stringify({ urls }),
         signal: controller.signal,
       });
       if (!res.ok) throw new Error((await res.json()).error);
@@ -282,17 +298,71 @@ https://nv.ua/ukr/..."></textarea>
         for (const part of parts) {
           if (!part) continue;
           const msg = JSON.parse(part);
-          if (msg.type === 'result') byUrl.set(msg.url, msg.result);
+          if (msg.type !== 'result') continue;
+          byUrl.set(msg.url, msg.result);
+          batchDone.add(msg.url);
         }
         // Batch redraws: many results can arrive at once
         if (!timer) timer = setTimeout(() => { timer = null; render(); }, 150);
       }
-      $('status').textContent = 'Готово. Перевірте рядки «Не знайдено» — туди можна вписати цифру вручну.';
+      $('status').textContent = 'Готово. Перевірте рядки «Не знайдено».';
     } catch (err) {
       $('status').textContent = err.name === 'AbortError' ? 'Зупинено.' : `Помилка: ${err.message}`;
     } finally {
       controller = null;
+      batch = new Set();
+      batchDone = new Set();
       setRunning(false);
+      render();
+    }
+  }
+
+  $('go').addEventListener('click', () => {
+    // One line = one row, blank lines kept so the order matches the spreadsheet
+    const input = $('urls').value.replace(/\s+$/, '').split(/\r?\n/).map((l) => l.trim());
+    if (!input.some(Boolean)) return $('urls').focus();
+    lines = input;
+    byUrl = new Map();
+    manual = new Map();
+    const unique = [...new Set(lines.filter(Boolean))];
+    $('status').textContent = `Перевіряю ${unique.length} посилань. Складні сайти відкриваються у вбудованому браузері — це може зайняти кілька хвилин.`;
+    check(unique);
+  });
+
+  // "Вказати на сторінці": the user clicks the counter in a separate window, the app remembers
+  // where it is on that site and re-checks every link from the same site
+  $('rows').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button.teach');
+    if (!btn || controller) return;
+    const url = btn.dataset.url;
+    const site = siteOf(url);
+    btn.disabled = true;
+    btn.textContent = 'клацніть на число у вікні сайту…';
+    $('status').textContent = `Відкрито ${site}. Клацніть на число переглядів — програма запам'ятає, де воно на цьому сайті.`;
+    try {
+      const res = await fetch('/api/teach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      if (!data.ok) {
+        $('status').textContent = 'Скасовано.';
+        return render();
+      }
+      const prev = byUrl.get(url);
+      byUrl.set(url, { ...prev, url, ok: true, views: data.views, method: 'вказано на сторінці', error: undefined });
+      const others = [...new Set(lines.filter((u) => u && u !== url && siteOf(u) === site))];
+      if (others.length) {
+        $('status').textContent = `Запам'ятав ${site}. Перераховую ще ${others.length} посилань з цього сайту…`;
+        await check(others);
+      } else {
+        $('status').textContent = `Запам'ятав ${site}: наступного разу посилання з нього рахуватимуться самі.`;
+        render();
+      }
+    } catch (err) {
+      $('status').textContent = `Помилка: ${err.message}`;
       render();
     }
   });

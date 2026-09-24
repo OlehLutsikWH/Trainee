@@ -10,6 +10,9 @@ import {
   parseGenericPage,
   getViews,
   setPageRenderer,
+  setSiteRules,
+  parseCountText,
+  isCounterText,
 } from '../src/platforms.js';
 
 test('parseCompactNumber', () => {
@@ -113,6 +116,9 @@ test('parseGenericPage finds view counters on news sites', () => {
   assert.equal(views('<span>👁 861</span>'), 861);
   assert.equal(views('<span>Переглянуто: 45</span>'), 45);
   assert.equal(views('<script>window.__DATA__={"article":{"id":7,"views":2723,"title":"x"}}</script>'), 2723);
+  // A "popular news" sidebar before the article must not win over the article's own counter
+  assert.equal(views(`<aside><span class="views">9</span></aside>
+    <article><h1>Стаття</h1><span class="views">861</span></article>`), 861);
   // Look-alike classes and dates must not be taken as views
   assert.throws(() => parseGenericPage('<div class="preview">12</div><a class="viewport">5</a>'));
   assert.throws(() => parseGenericPage('<span class="views"><svg></svg></span><time>12.03.2026</time>'));
@@ -164,4 +170,47 @@ test('titles decode numeric and named entities', () => {
     '<div class="tgme_widget_message_text">Привіт&#33; Це &laquo;тест&raquo; &#8211; так</div><span class="tgme_widget_message_views">5</span>',
   );
   assert.equal(title, 'Привіт! Це «тест» – так');
+});
+
+test('parseCountText reads the number from a clicked element', () => {
+  assert.equal(parseCountText('👁 3 641'), 3641);
+  assert.equal(parseCountText('Переглядів: 1,2 тис.'), 1200);
+  assert.equal(parseCountText('немає'), null);
+  assert.equal(isCounterText('861'), true);
+  assert.equal(isCounterText('👁 1,2 тис.'), true);
+  assert.equal(isCounterText('12.03.2026'), false);
+  assert.equal(isCounterText('10:15'), false);
+});
+
+test('a taught site rule is used before automatic detection', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    setPageRenderer(null);
+    setSiteRules(null);
+  });
+  const seen = [];
+  setSiteRules({ get: (site) => (site === 'news.example' ? { selector: '.meta span', index: 1 } : null) });
+  setPageRenderer(async (url, extract, rule) => {
+    seen.push(rule);
+    return rule ? extract('👁 2 612') : extract('<span class="views">5</span>');
+  });
+  globalThis.fetch = async () => new Response('<span class="views">9</span>');
+
+  const taught = await getViews('https://www.news.example/article');
+  assert.equal(taught.views, 2612);
+  assert.equal(taught.method, 'за вказаним зразком');
+  assert.deepEqual(seen, [{ selector: '.meta span', index: 1 }]);
+
+  const other = await getViews('https://other.example/a');
+  assert.equal(other.views, 9);
+});
+
+test('a zero counter is returned but flagged', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async () => new Response('<span class="post-views">0</span>');
+  const r = await getViews('https://zero.example/a');
+  assert.equal(r.views, 0);
+  assert.match(r.method, /показує 0/);
 });

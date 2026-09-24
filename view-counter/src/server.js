@@ -8,6 +8,14 @@ const MAX_URLS = 1000;
 const CONCURRENCY = 6;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
+// Desktop app only: opens the page so the user can click the view counter (see electron/teacher.js).
+// teacher(url) resolves with { views } or null if the user closed the window.
+let teacher = null;
+
+export function setTeacher(fn) {
+  teacher = fn;
+}
+
 async function mapLimited(items, limit, fn) {
   const results = new Array(items.length);
   let next = 0;
@@ -67,9 +75,24 @@ async function handleViews(req, res) {
   }
 }
 
+async function handleTeach(req, res) {
+  if (!teacher) return sendJson(res, 501, { error: 'Доступно лише в десктопній версії' });
+  let url;
+  try {
+    ({ url } = JSON.parse(await readBody(req)));
+    new URL(url);
+  } catch {
+    return sendJson(res, 400, { error: 'Очікується JSON: { "url": "https://..." }' });
+  }
+  const picked = await teacher(url);
+  sendJson(res, 200, picked ? { ok: true, views: picked.views } : { ok: false });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && req.url === '/api/views') return await handleViews(req, res);
+    if (req.method === 'POST' && req.url === '/api/teach') return await handleTeach(req, res);
+    if (req.method === 'GET' && req.url === '/api/capabilities') return sendJson(res, 200, { teach: !!teacher });
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
       const html = await readFile(path.join(PUBLIC_DIR, 'index.html'));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
