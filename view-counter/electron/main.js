@@ -1,5 +1,5 @@
 import { app, BrowserWindow, shell } from 'electron';
-import { startServer, setTeacher } from '../src/server.js';
+import { startServer, setTeacher, setDataDir } from '../src/server.js';
 import { setPageRenderer, setSiteRules, siteKey, parseCountText, isCounterText } from '../src/platforms.js';
 import { createPageRenderer } from './page-renderer.js';
 import { createSiteRules } from './site-rules.js';
@@ -12,6 +12,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 let win;
 
 async function createWindow() {
+  setDataDir(app.getPath('userData'));
   setPageRenderer(createPageRenderer());
   const rules = createSiteRules();
   setSiteRules(rules);

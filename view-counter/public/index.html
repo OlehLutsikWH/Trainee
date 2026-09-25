@@ -61,7 +61,16 @@
     col.c-line { width: 48px; }
     col.c-source { width: 170px; }
     col.c-views { width: 150px; }
-    col.c-note { width: 30%; }
+    col.c-reach { width: 150px; }
+    col.c-note { width: 26%; }
+    input.audience {
+      width: 120px; padding: 4px 8px; text-align: right; font: inherit; font-variant-numeric: tabular-nums;
+      border: 1px dashed var(--border); border-radius: 6px; background: transparent; color: var(--muted);
+    }
+    input.audience:focus { outline: none; border-style: solid; border-color: var(--accent); color: var(--text); }
+    input.audience.filled { border-style: solid; color: var(--text); }
+    .lookup { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); }
+    .stat.estimate .value { color: var(--muted); }
     .line { color: var(--muted); font-variant-numeric: tabular-nums; }
     .source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .post-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -118,9 +127,11 @@ https://nv.ua/ukr/..."></textarea>
     <div class="summary">
       <div class="stat"><div class="label">Загалом переглядів</div><div class="value" id="total">0</div></div>
       <div class="stat"><div class="label">Знайдено</div><div class="value" id="found">0</div></div>
+      <div class="stat estimate" title="Сума місячних аудиторій сайтів для кожної публікації. Це оцінка, не перегляди."><div class="label">Охоплення (оцінка)</div><div class="value" id="reach">—</div></div>
       <div class="spacer"></div>
       <div class="row">
         <button class="secondary" id="copy" title="Скопіювати перегляди по рядках, щоб вставити в колонку Excel">Копіювати колонку переглядів</button>
+        <button class="secondary" id="copy-reach" title="Скопіювати оцінку охоплення по рядках для колонки Excel">Копіювати охоплення</button>
         <button class="secondary" id="csv">Завантажити CSV</button>
       </div>
     </div>
@@ -134,8 +145,9 @@ https://nv.ua/ukr/..."></textarea>
       <span class="hint" id="table-hint">Де цифру не знайдено — впишіть її вручну в колонці «Перегляди», вона піде в копію та CSV.</span>
     </div>
     <table>
-      <colgroup><col class="c-line"><col class="c-source"><col><col class="c-views"><col class="c-note"></colgroup>
-      <thead><tr><th>#</th><th class="source-h">Джерело</th><th>Публікація</th><th class="num">Перегляди</th><th>Примітка</th></tr></thead>
+      <colgroup><col class="c-line"><col class="c-source"><col><col class="c-views"><col class="c-reach"><col class="c-note"></colgroup>
+      <thead><tr><th>#</th><th class="source-h">Джерело</th><th>Публікація</th><th class="num">Перегляди</th>
+        <th class="num" title="Місячна аудиторія сайту — вписується один раз на сайт і підставляється в усі його публікації">Охоплення (оцінка)</th><th>Примітка</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </section>
@@ -164,6 +176,12 @@ https://nv.ua/ukr/..."></textarea>
 
   const siteOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } };
   const PLATFORMS = new Set(['YouTube', 'Telegram', 'TikTok', 'Instagram', 'Facebook', 'X (Twitter)']);
+
+  // Monthly audience per site (typed in once per site, saved by the app) -> "reach (estimate)"
+  let audience = {};
+  fetch('/api/audience').then((r) => r.json()).then((a) => { audience = a || {}; if (lines.length) render(); }).catch(() => {});
+  const reachSite = (r) => (r.empty || r.pending || !r.url || PLATFORMS.has(r.platform) ? null : siteOf(r.url));
+  const reachOf = (r) => { const site = reachSite(r); return site ? audience[site] ?? null : null; };
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -198,12 +216,31 @@ https://nv.ua/ukr/..."></textarea>
     const withUrl = all.filter((r) => !r.empty);
     $('total').textContent = fmt(total);
     $('found').textContent = `${withUrl.filter(hasViews).length} з ${withUrl.length}`;
+    const reached = new Set();
+    let reach = 0;
+    for (const r of all) {
+      const value = reachOf(r);
+      if (value == null || reached.has(r.url)) continue;
+      reached.add(r.url);
+      reach += value;
+    }
+    $('reach').textContent = reach ? fmt(reach) : '—';
     $('progress').firstElementChild.style.width = batch.size ? `${(batchDone.size / batch.size) * 100}%` : '0';
     $('progress').hidden = !controller;
   }
 
+  function reachCell(r) {
+    const site = reachSite(r);
+    if (!site) return '';
+    const value = audience[site];
+    return `<input class="audience${value ? ' filled' : ''}" data-site="${escapeHtml(site)}" inputmode="numeric"
+        placeholder="аудиторія/міс" title="Місячна аудиторія ${escapeHtml(site)} — застосується до всіх його публікацій"
+        value="${value ? fmt(value) : ''}">
+      <a class="lookup" href="https://www.similarweb.com/website/${encodeURIComponent(site)}/" target="_blank" rel="noopener">Similarweb ↗</a>`;
+  }
+
   function rowHtml(r) {
-    if (r.empty) return `<tr><td class="line">${r.line}</td><td class="source"></td><td class="pending" colspan="3">порожній рядок</td></tr>`;
+    if (r.empty) return `<tr><td class="line">${r.line}</td><td class="source"></td><td class="pending" colspan="4">порожній рядок</td></tr>`;
     const title = r.title ? `<div class="post-title" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>` : '';
     const link = `<a class="post-url" href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="${escapeHtml(r.url)}">${escapeHtml(r.url)}</a>`;
     let views;
@@ -231,6 +268,7 @@ https://nv.ua/ukr/..."></textarea>
       <td class="source" title="${escapeHtml(r.platform)}">${escapeHtml(r.platform ?? '')}</td>
       <td>${title}${link}</td>
       <td class="num">${views}</td>
+      <td class="num">${reachCell(r)}</td>
       <td>${note}</td>
     </tr>`;
   }
@@ -257,6 +295,31 @@ https://nv.ua/ukr/..."></textarea>
     renderSummary(rows());
   });
   $('rows').addEventListener('change', (e) => { if (e.target.matches('input.manual')) render(); });
+
+  // Audience is per site: saving it fills the reach for every publication from that site
+  $('rows').addEventListener('change', async (e) => {
+    if (!e.target.matches('input.audience')) return;
+    const site = e.target.dataset.site;
+    const digits = e.target.value.replace(/\D/g, '');
+    try {
+      const res = await fetch('/api/audience', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ site, value: digits ? Number(digits) : null }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      audience = await res.json();
+      $('status').textContent = digits
+        ? `Аудиторію ${site} збережено: ${fmt(Number(digits))} на місяць.`
+        : `Аудиторію ${site} видалено.`;
+    } catch (err) {
+      $('status').textContent = `Не вдалося зберегти аудиторію: ${err.message}`;
+    }
+    render();
+  });
+  $('rows').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.matches('input.audience, input.manual')) e.target.blur();
+  });
 
   document.querySelectorAll('.chip').forEach((chip) => chip.addEventListener('click', () => {
     document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
@@ -385,13 +448,28 @@ https://nv.ua/ukr/..."></textarea>
     }
   });
 
+  $('copy-reach').addEventListener('click', async () => {
+    const byLine = new Map(lines.map((_, i) => [i + 1, '']));
+    for (const r of rows()) {
+      const value = reachOf(r);
+      if (value != null) byLine.set(r.line, (Number(byLine.get(r.line)) || 0) + value);
+    }
+    try {
+      await navigator.clipboard.writeText([...byLine.values()].join('\n'));
+      $('copy-reach').textContent = 'Скопійовано ✓';
+      setTimeout(() => { $('copy-reach').textContent = 'Копіювати охоплення'; }, 2000);
+    } catch {
+      alert('Не вдалося скопіювати. Скористайтеся кнопкою «Завантажити CSV».');
+    }
+  });
+
   $('csv').addEventListener('click', () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const out = [['Рядок', 'Джерело', 'Посилання', 'Назва', 'Перегляди', 'Як знайдено', 'Помилка'].map(q).join(',')];
+    const out = [['Рядок', 'Джерело', 'Посилання', 'Назва', 'Перегляди', 'Як знайдено', 'Охоплення (оцінка)', 'Помилка'].map(q).join(',')];
     for (const r of rows()) {
       if (r.empty) { out.push([r.line].map(q).join(',')); continue; }
       const method = r.ok ? r.method : r.manual ? 'вручну' : '';
-      out.push([r.line, r.platform, r.url, r.title, hasViews(r) ? r.views : '', method, r.ok || r.manual ? '' : r.error].map(q).join(','));
+      out.push([r.line, r.platform, r.url, r.title, hasViews(r) ? r.views : '', method, reachOf(r) ?? '', r.ok || r.manual ? '' : r.error].map(q).join(','));
     }
     const blob = new Blob(['﻿' + out.join('\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');

@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { getViews } from './platforms.js';
@@ -7,6 +8,47 @@ import { getViews } from './platforms.js';
 const MAX_URLS = 1000;
 const CONCURRENCY = 6;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+// Monthly audience per site, typed in by the user, for the "reach (estimate)" column.
+// Kept in a JSON file; the desktop app points it at its user data folder.
+let audienceFile = path.join(os.homedir(), '.view-counter', 'audience.json');
+let audience = null;
+
+export function setDataDir(dir) {
+  audienceFile = path.join(dir, 'audience.json');
+  audience = null;
+}
+
+async function loadAudience() {
+  if (!audience) {
+    try {
+      audience = JSON.parse(await readFile(audienceFile, 'utf8'));
+    } catch {
+      audience = {};
+    }
+  }
+  return audience;
+}
+
+async function handleAudience(req, res) {
+  const data = await loadAudience();
+  if (req.method === 'GET') return sendJson(res, 200, data);
+  let site;
+  let value;
+  try {
+    ({ site, value } = JSON.parse(await readBody(req)));
+  } catch {
+    return sendJson(res, 400, { error: 'Очікується JSON: { "site": "...", "value": 123 }' });
+  }
+  site = String(site ?? '').trim().toLowerCase().replace(/^www\./, '');
+  if (!site) return sendJson(res, 400, { error: 'Не вказано сайт' });
+  const n = Number(value);
+  if (value === null || value === '' || !Number.isFinite(n) || n <= 0) delete data[site];
+  else data[site] = Math.round(n);
+  await mkdir(path.dirname(audienceFile), { recursive: true });
+  await writeFile(audienceFile, JSON.stringify(data, null, 2));
+  sendJson(res, 200, data);
+}
 
 // Desktop app only: opens the page so the user can click the view counter (see electron/teacher.js).
 // teacher(url) resolves with { views } or null if the user closed the window.
@@ -92,6 +134,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && req.url === '/api/views') return await handleViews(req, res);
     if (req.method === 'POST' && req.url === '/api/teach') return await handleTeach(req, res);
+    if (req.url === '/api/audience' && (req.method === 'GET' || req.method === 'PUT')) return await handleAudience(req, res);
     if (req.method === 'GET' && req.url === '/api/capabilities') return sendJson(res, 200, { teach: !!teacher });
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
       const html = await readFile(path.join(PUBLIC_DIR, 'index.html'));
