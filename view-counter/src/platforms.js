@@ -225,9 +225,10 @@ function pageText(html) {
 
 // An element marked as a view counter — by class ("article__views", "fa-eye", "post-views-count")
 // or an eye icon (<use href="#icon-eye">) — followed by the number.
-function findMarkedCounter(html) {
+function findMarkedCounter(html, near = 0) {
   const markers = /<[a-z][^>]*\sclass=["']([^"']*)["'][^>]*>|<(?:use|img|svg)[^>]*(?:href|src)=["']([^"']*)["'][^>]*>/gi;
   const countFirst = new RegExp(`^\\s*(?:👁️?\\s*)?${COUNT}(?![\\d.,:/])`, 'i');
+  let best = null;
   for (const m of html.matchAll(markers)) {
     const isCounter = m[1] !== undefined
       ? /(?:^|[\s_-])(?:views?|eye|перегляд\w*|hits|watch(?:ed)?)(?:$|[\s_-])/i.test(m[1])
@@ -235,9 +236,13 @@ function findMarkedCounter(html) {
     if (!isCounter) continue;
     const after = pageText(html.slice(m.index + m[0].length, m.index + m[0].length + 400));
     const num = after.match(countFirst);
-    if (num) return toInt(num[1]);
+    if (!num) continue;
+    // The article's own counter sits next to its heading (just above or below it);
+    // sidebars and embedded widgets are further away
+    const distance = Math.abs(m.index - near);
+    if (!best || distance < best.distance) best = { distance, value: toInt(num[1]) };
   }
-  return null;
+  return best ? best.value : null;
 }
 
 function findCounterInText(text) {
@@ -275,12 +280,12 @@ export function parseGenericPage(html) {
   const attr = html.match(/\sdata-(?:views|view-count|views-count|post-views|count-views)=["'](\d+)["']/i);
   if (attr) return found(Number(attr[1]), 'лічильник на сторінці');
 
-  // Sidebars ("popular news") often show other articles' views before the article itself,
-  // so look after the article heading first and only then across the whole page.
+  // Sidebars ("popular news") and embedded widgets show other views too, so prefer the counter
+  // closest to the article heading, and search the text after the heading first.
   const h1 = html.search(/<h1[\s>]/i);
   const fromTitle = h1 > 0 ? html.slice(h1) : null;
 
-  const marked = (fromTitle && findMarkedCounter(fromTitle)) ?? findMarkedCounter(html);
+  const marked = findMarkedCounter(html, Math.max(h1, 0));
   if (marked !== null) return found(marked, 'лічильник на сторінці');
 
   // Counters kept in the page's embedded JSON (common on sites built with JS frameworks)

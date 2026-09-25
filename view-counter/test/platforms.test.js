@@ -119,6 +119,10 @@ test('parseGenericPage finds view counters on news sites', () => {
   // A "popular news" sidebar before the article must not win over the article's own counter
   assert.equal(views(`<aside><span class="views">9</span></aside>
     <article><h1>Стаття</h1><span class="views">861</span></article>`), 861);
+  // Counter in the meta line above the heading beats an embedded video's counter further down
+  assert.equal(views(`<aside>${'<p>меню</p>'.repeat(50)}<span class="views">9</span></aside>
+    <article><div class="meta"><span class="views">2 849</span></div><h1>Стаття</h1>
+    <p>${'Текст статті. '.repeat(100)}</p><div class="video"><span class="views">2 760</span></div></article>`), 2849);
   // Look-alike classes and dates must not be taken as views
   assert.throws(() => parseGenericPage('<div class="preview">12</div><a class="viewport">5</a>'));
   assert.throws(() => parseGenericPage('<span class="views"><svg></svg></span><time>12.03.2026</time>'));

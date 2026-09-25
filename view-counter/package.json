@@ -1,6 +1,6 @@
 {
   "name": "view-counter",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Paste links to posts and get their view counts",
   "type": "module",
   "private": true,
