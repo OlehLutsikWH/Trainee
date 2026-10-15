@@ -273,4 +273,7 @@ test('page parsing matches the desktop app on the same samples', () => {
   assert.equal(ctx.parseAudience_('85 тис.'), 85000);
   assert.equal(ctx.parseAudience_(150000), 150000);
   assert.equal(ctx.parseAudience_('abc'), null);
+  assert.equal(ctx.parseAudience_('76.68M'), 76680000);
+  assert.equal(ctx.parseAudience_('1,200,000'), 1200000);
+  assert.equal(ctx.parseAudience_('7 668'), 7668);
 });

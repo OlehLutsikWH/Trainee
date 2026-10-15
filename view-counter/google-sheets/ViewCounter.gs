@@ -303,8 +303,10 @@ function saveAudience_(audience) {
 /** 150000, "150 000", "150K", "1.2M", "85 тис.", "1,2 млн" → число */
 function parseAudience_(value) {
   if (typeof value === 'number') return value > 0 ? Math.round(value) : null;
-  var m = String(value).replace(/[\s  ]/g, '').toLowerCase()
-    .match(/^(\d+(?:[.,]\d+)?)(k|к|тис\.?|m|м|млн\.?)?$/);
+  var compact = String(value).replace(/[\s\u00a0\u202f]/g, '').toLowerCase();
+  // Число з роздільниками тисяч: 1,200,000 / 1.200.000
+  if (/^\d{1,3}([.,])\d{3}(\1\d{3})*$/.test(compact)) return Number(compact.replace(/[.,]/g, ''));
+  var m = compact.match(/^(\d+(?:[.,]\d+)?)(k|к|тис\.?|m|м|млн\.?)?$/);
   if (!m) return null;
   var n = Number(m[1].replace(',', '.'));
   var mult = m[2] ? (/^(k|к|тис)/.test(m[2]) ? 1e3 : 1e6) : 1;
