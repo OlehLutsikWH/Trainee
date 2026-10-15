@@ -93,6 +93,18 @@
       background: transparent; color: var(--accent); border: 1px solid var(--border);
     }
     .teach.subtle { border-color: transparent; padding: 0; color: var(--muted); text-decoration: underline; }
+    .teach.chrome { border-color: var(--accent); }
+    select.mode {
+      font: inherit; font-size: 12px; padding: 2px 4px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--card); color: var(--muted);
+    }
+    dialog {
+      border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: min(640px, 92vw);
+      background: var(--card); color: var(--text);
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, .45); }
+    dialog h2 { margin: 0 0 6px; font-size: 18px; }
+    dialog textarea { height: 220px; margin: 10px 0; }
     [hidden] { display: none !important; }
 
     @media (max-width: 800px) {
@@ -127,11 +139,20 @@ https://nv.ua/ukr/..."></textarea>
     <div class="summary">
       <div class="stat"><div class="label">Загалом переглядів</div><div class="value" id="total">0</div></div>
       <div class="stat"><div class="label">Знайдено</div><div class="value" id="found">0</div></div>
-      <div class="stat estimate" title="Сума місячних аудиторій сайтів для кожної публікації. Це оцінка, не перегляди."><div class="label">Охоплення (оцінка)</div><div class="value" id="reach">—</div></div>
+      <div class="stat estimate" title="Сума аудиторій сайтів для кожної публікації. Це оцінка, не перегляди.">
+        <div class="label">Охоплення (оцінка),
+          <select class="mode" id="reach-mode" title="Місячна аудиторія сайту або денна (місячна ÷ 30)">
+            <option value="monthly">за місяць</option>
+            <option value="daily">за день (÷30)</option>
+          </select>
+        </div>
+        <div class="value" id="reach">—</div>
+      </div>
       <div class="spacer"></div>
       <div class="row">
         <button class="secondary" id="copy" title="Скопіювати перегляди по рядках, щоб вставити в колонку Excel">Копіювати колонку переглядів</button>
         <button class="secondary" id="copy-reach" title="Скопіювати оцінку охоплення по рядках для колонки Excel">Копіювати охоплення</button>
+        <button class="secondary" id="import-audience" title="Вставити з Excel таблицю «сайт — місячна аудиторія»">Вставити аудиторії</button>
         <button class="secondary" id="csv">Завантажити CSV</button>
       </div>
     </div>
@@ -153,6 +174,20 @@ https://nv.ua/ukr/..."></textarea>
   </section>
 </main>
 
+<dialog id="audience-dialog">
+  <h2>Вставити аудиторії сайтів</h2>
+  <div class="hint">Скопіюйте з Excel дві колонки — <b>сайт</b> і <b>місячна аудиторія</b> — і вставте сюди.
+    Можна писати 150000, 150 000, 150K або 1.2M. Сайт — домен або будь-яке посилання на нього.</div>
+  <textarea id="audience-text" placeholder="podilske.com	150000
+vinbazar.com	85K
+https://glavcom.ua/...	3.4M"></textarea>
+  <div class="row">
+    <button id="audience-save">Зберегти</button>
+    <button class="secondary" id="audience-cancel">Скасувати</button>
+    <span class="hint" id="audience-preview"></span>
+  </div>
+</dialog>
+
 <script>
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => n.toLocaleString('uk-UA');
@@ -166,9 +201,12 @@ https://nv.ua/ukr/..."></textarea>
   let batch = new Set();   // URLs being checked right now
   let batchDone = new Set(); // ...and the ones of them already answered
   let canTeach = false;    // desktop app: user can point at the counter on a page
+  let canUseChrome = false; // desktop app: sites blocked by Cloudflare can be opened in the user's Chrome/Edge
 
   fetch('/api/capabilities').then((r) => r.json()).then((c) => {
     canTeach = !!c.teach;
+    canUseChrome = !!c.realBrowser;
+    if (lines.length) render();
     if (canTeach) {
       $('table-hint').textContent = 'Де цифру не знайдено — натисніть «Вказати на сторінці» й клацніть на лічильник: програма запам\'ятає сайт і перерахує всі його посилання. Або впишіть число вручну.';
     }
@@ -181,7 +219,19 @@ https://nv.ua/ukr/..."></textarea>
   let audience = {};
   fetch('/api/audience').then((r) => r.json()).then((a) => { audience = a || {}; if (lines.length) render(); }).catch(() => {});
   const reachSite = (r) => (r.empty || r.pending || !r.url || PLATFORMS.has(r.platform) ? null : siteOf(r.url));
-  const reachOf = (r) => { const site = reachSite(r); return site ? audience[site] ?? null : null; };
+  // Reach shown per publication: the site's monthly audience, or a day's worth of it
+  let reachMode = 'monthly';
+  const reachValue = (monthly) => (reachMode === 'daily' ? Math.round(monthly / 30) : monthly);
+  const reachOf = (r) => {
+    const site = reachSite(r);
+    const monthly = site ? audience[site] ?? null : null;
+    return monthly == null ? null : reachValue(monthly);
+  };
+  fetch('/api/settings').then((r) => r.json()).then((s) => {
+    reachMode = s.reachMode === 'daily' ? 'daily' : 'monthly';
+    $('reach-mode').value = reachMode;
+    if (lines.length) render();
+  }).catch(() => {});
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -236,6 +286,7 @@ https://nv.ua/ukr/..."></textarea>
     return `<input class="audience${value ? ' filled' : ''}" data-site="${escapeHtml(site)}" inputmode="numeric"
         placeholder="аудиторія/міс" title="Місячна аудиторія ${escapeHtml(site)} — застосується до всіх його публікацій"
         value="${value ? fmt(value) : ''}">
+      ${value && reachMode === 'daily' ? `<span class="lookup">≈ ${fmt(reachValue(value))} за день</span>` : ''}
       <a class="lookup" href="https://www.similarweb.com/website/${encodeURIComponent(site)}/" target="_blank" rel="noopener">Similarweb ↗</a>`;
   }
 
@@ -252,14 +303,18 @@ https://nv.ua/ukr/..."></textarea>
       views = `<span class="views">${r.approximate ? '≈ ' : ''}${fmt(r.views)}</span>`;
       note = `<span class="note">${escapeHtml(r.method || '')}</span>`;
       if (canTeach && !PLATFORMS.has(r.platform)) {
-        note += `<br><button class="teach subtle" data-url="${escapeHtml(r.url)}">не те число? вказати</button>`;
+        const viaChrome = /Chrome/.test(r.method || '') ? ' data-via="chrome"' : '';
+        note += `<br><button class="teach subtle"${viaChrome} data-url="${escapeHtml(r.url)}">не те число? вказати</button>`;
       }
     } else {
       views = `<input class="manual${r.manual ? ' filled' : ''}" data-key="${escapeHtml(r.key)}" inputmode="numeric" placeholder="вписати" value="${r.manual ? r.views : ''}">`;
       note = r.manual
         ? '<span class="note manual">вписано вручну</span>'
         : `<span class="note err">${escapeHtml(r.error)}</span>`;
-      if (canTeach && !PLATFORMS.has(r.platform) && !/404|недоступний|Некоректне/.test(r.error)) {
+      if (r.blocked === 'cloudflare' && canUseChrome) {
+        note += `<br><button class="teach chrome" data-via="chrome" data-url="${escapeHtml(r.url)}"
+          title="Відкриє сайт у вашому Chrome або Edge: пройдіть перевірку й клацніть на число переглядів">Відкрити через Chrome</button>`;
+      } else if (canTeach && !PLATFORMS.has(r.platform) && !/404|недоступний|Некоректне/.test(r.error)) {
         note += `<br><button class="teach" data-url="${escapeHtml(r.url)}">Вказати на сторінці</button>`;
       }
     }
@@ -398,15 +453,18 @@ https://nv.ua/ukr/..."></textarea>
     const btn = e.target.closest('button.teach');
     if (!btn || controller) return;
     const url = btn.dataset.url;
+    const via = btn.dataset.via || 'builtin';
     const site = siteOf(url);
     btn.disabled = true;
     btn.textContent = 'клацніть на число у вікні сайту…';
-    $('status').textContent = `Відкрито ${site}. Клацніть на число переглядів — програма запам'ятає, де воно на цьому сайті.`;
+    $('status').textContent = via === 'chrome'
+      ? `Відкриваю ${site} у Chrome. Якщо з'явиться перевірка «Ви людина?» — пройдіть її, потім клацніть на число переглядів.`
+      : `Відкрито ${site}. Клацніть на число переглядів — програма запам'ятає, де воно на цьому сайті.`;
     try {
       const res = await fetch('/api/teach', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, via }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -415,7 +473,8 @@ https://nv.ua/ukr/..."></textarea>
         return render();
       }
       const prev = byUrl.get(url);
-      byUrl.set(url, { ...prev, url, ok: true, views: data.views, method: 'вказано на сторінці', error: undefined });
+      byUrl.set(url, { ...prev, url, ok: true, views: data.views, error: undefined, blocked: undefined,
+        method: via === 'chrome' ? 'вказано в Chrome' : 'вказано на сторінці' });
       const others = [...new Set(lines.filter((u) => u && u !== url && siteOf(u) === site))];
       if (others.length) {
         $('status').textContent = `Запам'ятав ${site}. Перераховую ще ${others.length} посилань з цього сайту…`;
@@ -427,6 +486,78 @@ https://nv.ua/ukr/..."></textarea>
     } catch (err) {
       $('status').textContent = `Помилка: ${err.message}`;
       render();
+    }
+  });
+
+  $('reach-mode').addEventListener('change', async (e) => {
+    reachMode = e.target.value;
+    render();
+    fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reachMode }),
+    }).catch(() => {});
+  });
+
+  // "150 000", "150K", "1.2M", "1,2 млн", "85 тис." -> number
+  function parseAudience(text) {
+    const m = String(text).replace(/[\s\u00a0\u202f]/g, '').toLowerCase()
+      .match(/^(\d+(?:[.,]\d+)?)(k|к|тис\.?|m|м|млн\.?)?$/);
+    if (!m) return null;
+    const n = Number(m[1].replace(',', '.'));
+    const mult = m[2] ? (/^(k|к|тис)/.test(m[2]) ? 1e3 : 1e6) : 1;
+    return Number.isFinite(n) && n > 0 ? Math.round(n * mult) : null;
+  }
+
+  // Each pasted line: a site (domain or any link) and a number, separated by tab, ; or spaces
+  function parseAudienceLines(text) {
+    const entries = {};
+    let skipped = 0;
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const cells = line.split(/\t|;/).map((c) => c.trim()).filter(Boolean);
+      // Without tabs: first word is the site, the rest is the number ("podilske.com 150 000")
+      const parts = cells.length >= 2 ? cells : (line.trim().match(/^(\S+)\s+(.+)$/)?.slice(1) ?? [line.trim()]);
+      const site = siteOf(/^[a-z]+:\/\//i.test(parts[0]) ? parts[0] : `https://${parts[0]}`);
+      const value = parts.length >= 2 ? parseAudience(parts[parts.length - 1]) : null;
+      if (site && site.includes('.') && value) entries[site] = value;
+      else skipped++;
+    }
+    return { entries, skipped };
+  }
+
+  $('import-audience').addEventListener('click', () => {
+    $('audience-text').value = '';
+    $('audience-preview').textContent = '';
+    $('audience-dialog').showModal();
+    $('audience-text').focus();
+  });
+  $('audience-cancel').addEventListener('click', () => $('audience-dialog').close());
+  $('audience-text').addEventListener('input', () => {
+    const { entries, skipped } = parseAudienceLines($('audience-text').value);
+    const n = Object.keys(entries).length;
+    $('audience-preview').textContent = n || skipped ? `розпізнано сайтів: ${n}${skipped ? `, не розпізнано рядків: ${skipped}` : ''}` : '';
+  });
+  $('audience-save').addEventListener('click', async () => {
+    const { entries, skipped } = parseAudienceLines($('audience-text').value);
+    const n = Object.keys(entries).length;
+    if (!n) {
+      $('audience-preview').textContent = 'Не знайдено жодного рядка «сайт — число».';
+      return;
+    }
+    try {
+      const res = await fetch('/api/audience', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entries }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      audience = await res.json();
+      $('audience-dialog').close();
+      $('status').textContent = `Збережено аудиторії ${n} сайтів${skipped ? ` (не розпізнано рядків: ${skipped})` : ''}.`;
+      if (lines.length) render();
+    } catch (err) {
+      $('audience-preview').textContent = `Не вдалося зберегти: ${err.message}`;
     }
   });
 
@@ -465,7 +596,7 @@ https://nv.ua/ukr/..."></textarea>
 
   $('csv').addEventListener('click', () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const out = [['Рядок', 'Джерело', 'Посилання', 'Назва', 'Перегляди', 'Як знайдено', 'Охоплення (оцінка)', 'Помилка'].map(q).join(',')];
+    const out = [['Рядок', 'Джерело', 'Посилання', 'Назва', 'Перегляди', 'Як знайдено', reachMode === 'daily' ? 'Охоплення (оцінка, за день)' : 'Охоплення (оцінка, за місяць)', 'Помилка'].map(q).join(',')];
     for (const r of rows()) {
       if (r.empty) { out.push([r.line].map(q).join(',')); continue; }
       const method = r.ok ? r.method : r.manual ? 'вручну' : '';

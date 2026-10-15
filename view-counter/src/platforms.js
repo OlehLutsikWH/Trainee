@@ -8,10 +8,19 @@ const USER_AGENT =
 const REQUEST_TIMEOUT_MS = 15000;
 
 export class ViewsError extends Error {
-  constructor(message, status) {
+  // code 'cloudflare': the site showed an anti-bot check instead of the page
+  constructor(message, status, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+const CLOUDFLARE_BLOCKED = 'Сайт захищений від ботів (Cloudflare)';
+
+// Cloudflare's "Just a moment… / checking your browser" interstitial
+export function isChallengePage(html) {
+  return /\/cdn-cgi\/challenge-platform\/|window\._cf_chl_opt|<title>\s*Just a moment/i.test(String(html ?? ''));
 }
 
 async function fetchText(url) {
@@ -21,6 +30,9 @@ async function fetchText(url) {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) {
+    if (res.headers.get('cf-mitigated') === 'challenge' || isChallengePage(await res.text().catch(() => ''))) {
+      throw new ViewsError(CLOUDFLARE_BLOCKED, res.status, 'cloudflare');
+    }
     const hint = res.status === 403 ? ' (сайт заблокував автоматичний запит)' : res.status === 404 ? ' (сторінку не знайдено)' : '';
     throw new ViewsError(`Сторінка відповіла кодом ${res.status}${hint}`, res.status);
   }
@@ -330,13 +342,30 @@ export function siteKey(url) {
   return new URL(url).hostname.replace(/^www\./, '');
 }
 
+// Optional: the user's own Chrome/Edge, for sites whose anti-bot check refuses the built-in
+// browser. Same signature as pageRenderer. Set by the desktop app.
+let realBrowser = null;
+
+export function setRealBrowser(renderer) {
+  realBrowser = renderer;
+}
+
+const readRuleText = (text) => {
+  const views = parseCountText(text);
+  return views === null ? null : { views };
+};
+
 async function fetchGeneric(url) {
   const rule = siteRules?.get(siteKey(url.href));
+  // Sites taught in Chrome are only reachable through Chrome
+  if (rule?.via === 'chrome') {
+    if (!realBrowser) throw new ViewsError(CLOUDFLARE_BLOCKED, 403, 'cloudflare');
+    const picked = await realBrowser(url.href, readRuleText, rule);
+    if (picked) return { ...picked, title: null, method: 'Chrome: за вказаним зразком' };
+    throw new ViewsError('Не вдалося прочитати лічильник через Chrome', 403, 'cloudflare');
+  }
   if (rule && pageRenderer) {
-    const picked = await pageRenderer(url.href, (text) => {
-      const views = parseCountText(text);
-      return views === null ? null : { views };
-    }, rule);
+    const picked = await pageRenderer(url.href, readRuleText, rule);
     if (picked) return { ...picked, title: picked.title ?? null, method: 'за вказаним зразком' };
   }
 
@@ -351,12 +380,20 @@ async function fetchGeneric(url) {
   }
 
   const pageMissing = quickError?.status === 404 || quickError?.status === 410 || isDnsError(quickError);
+  // Whether the built-in browser was last looking at an anti-bot check (null: never saw a page)
+  let stuckOnChallenge = null;
   if (pageRenderer && !pageMissing) {
-    const rendered = await pageRenderer(url.href, tryParseGeneric);
+    const rendered = await pageRenderer(url.href, (html) => {
+      stuckOnChallenge = isChallengePage(html);
+      return stuckOnChallenge ? null : tryParseGeneric(html);
+    });
     if (rendered) return { ...rendered, method: `браузер: ${rendered.method}` };
   }
 
   if (quick) return { ...quick, method: `${quick.method}: показує 0 — перевірте` };
+  if (stuckOnChallenge || (stuckOnChallenge === null && quickError?.code === 'cloudflare')) {
+    throw new ViewsError(CLOUDFLARE_BLOCKED, 403, 'cloudflare');
+  }
   if (pageRenderer && !pageMissing) {
     throw new ViewsError('Лічильника на сторінці немає (перевірено й у браузері)');
   }
@@ -399,7 +436,8 @@ export async function getViews(rawUrl) {
     try {
       return { ...base, ok: true, platform: url.hostname.replace(/^www\./, ''), ...(await fetchGeneric(url)) };
     } catch (err) {
-      return { ...base, ok: false, platform: url.hostname.replace(/^www\./, ''), error: errorMessage(err) };
+      const blocked = err.code === 'cloudflare' ? { blocked: 'cloudflare' } : {};
+      return { ...base, ok: false, platform: url.hostname.replace(/^www\./, ''), error: errorMessage(err), ...blocked };
     }
   }
   if (platform.unsupported) return { ...base, ok: false, platform: platform.name, error: platform.unsupported };

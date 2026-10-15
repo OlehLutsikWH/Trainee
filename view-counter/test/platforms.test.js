@@ -13,6 +13,8 @@ import {
   setSiteRules,
   parseCountText,
   isCounterText,
+  isChallengePage,
+  setRealBrowser,
 } from '../src/platforms.js';
 
 test('parseCompactNumber', () => {
@@ -217,4 +219,43 @@ test('a zero counter is returned but flagged', async (t) => {
   const r = await getViews('https://zero.example/a');
   assert.equal(r.views, 0);
   assert.match(r.method, /показує 0/);
+});
+
+test('Cloudflare checks are reported as blocked, and taught-in-Chrome sites read through Chrome', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    setPageRenderer(null);
+    setRealBrowser(null);
+    setSiteRules(null);
+  });
+  const challenge = '<html><head><title>Just a moment...</title></head><body><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/x.js"></script></body></html>';
+  assert.equal(isChallengePage(challenge), true);
+  assert.equal(isChallengePage('<p>Новина</p>'), false);
+
+  // Plain request answered by the challenge, no built-in browser (web version)
+  globalThis.fetch = async () => new Response(challenge, { status: 403, headers: { 'cf-mitigated': 'challenge' } });
+  let r = await getViews('https://blocked.example/a');
+  assert.equal(r.ok, false);
+  assert.equal(r.blocked, 'cloudflare');
+  assert.match(r.error, /Cloudflare/);
+
+  // Built-in browser stays stuck on the challenge too
+  setPageRenderer(async (url, extract) => extract(challenge));
+  r = await getViews('https://blocked.example/b');
+  assert.equal(r.blocked, 'cloudflare');
+
+  // Built-in browser gets past the check but the page has no counter: not "blocked"
+  setPageRenderer(async (url, extract) => extract('<p>no counter</p>'));
+  r = await getViews('https://blocked.example/c');
+  assert.equal(r.blocked, undefined);
+
+  // After teaching the site in Chrome, it is read through Chrome with the saved rule
+  const seen = [];
+  setSiteRules({ get: (site) => (site === 'blocked.example' ? { selector: '.cnt', index: 0, via: 'chrome' } : null) });
+  setRealBrowser(async (url, extract, rule) => { seen.push(rule.via); return extract('1 529'); });
+  r = await getViews('https://blocked.example/d');
+  assert.equal(r.views, 1529);
+  assert.match(r.method, /^Chrome/);
+  assert.deepEqual(seen, ['chrome']);
 });
