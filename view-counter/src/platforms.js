@@ -277,23 +277,29 @@ export function isCounterText(text) {
   return parseCountText(t) !== null && !/\d{1,2}[.:/]\d{1,2}(?:[.:/]\d{2,4})?/.test(t);
 }
 
-// The counter in the article's byline, between its heading and the first paragraph:
+// The counter in the article's byline, between its heading and the article text:
 // "Київ • УНН • 16 жовтня 2026, 16:06 • 9306 перегляди". Null when there is none.
 const BYLINE_TEXT_CHARS = 300;
+// A paragraph this long is article text; the byline's own <p> items are short
+const ARTICLE_PARAGRAPH_CHARS = 80;
 
 export function findHeadingCounter(html) {
   const h1 = html.search(/<h1[\s>]/i);
   if (h1 < 0) return null;
   const rest = html.slice(h1, h1 + 50000);
-  const headingEnd = rest.search(/<\/h1>/i);
-  const para = headingEnd < 0 ? -1 : rest.slice(headingEnd).search(/<p[\s>]/i);
-  const byline = para < 0 ? rest : rest.slice(0, headingEnd + para);
-  return findCounterInText(pageText(byline).slice(0, BYLINE_TEXT_CHARS));
+  let end = rest.length;
+  for (const p of rest.matchAll(/<p[\s>][\s\S]*?<\/p>/gi)) {
+    if (pageText(p[0]).trim().length > ARTICLE_PARAGRAPH_CHARS) {
+      end = p.index;
+      break;
+    }
+  }
+  return findCounterInText(pageText(rest.slice(0, end)).slice(0, BYLINE_TEXT_CHARS));
 }
 
 // Many news sites print a view counter on the article page. Tries, in order of reliability:
 // schema.org interaction statistics, a "views" element in the markup, then "N переглядів" in the text.
-// The counter readers see wins over schema.org, which some sites (unn.ua) update far less often.
+// The counter readers see wins over schema.org.
 export function parseGenericPage(html) {
   const title = metaContent(html, 'og:title');
   const found = (views, method) => ({ views, title, method });
@@ -305,8 +311,7 @@ export function parseGenericPage(html) {
   if (ld) {
     const visible = findHeadingCounter(html);
     if (visible > 0) return found(visible, 'лічильник біля заголовка');
-    // 0 by the heading: a script fills the real number in later (see fetchGeneric)
-    return { ...found(Number(ld[1]), 'schema.org'), visibleLater: visible === 0 };
+    return found(Number(ld[1]), 'schema.org');
   }
 
   const attr = html.match(/\sdata-(?:views|view-count|views-count|post-views|count-views)=["'](\d+)["']/i);
@@ -343,7 +348,7 @@ export function setPageRenderer(renderer) {
 
 function tryParseGeneric(html) {
   try {
-    const { visibleLater, ...result } = parseGenericPage(html);
+    const result = parseGenericPage(html);
     return result.views > 0 ? result : null;
   } catch {
     return null;
@@ -375,6 +380,37 @@ const readRuleText = (text) => {
   return views === null ? null : { views };
 };
 
+// Sites whose counter a script updates after the page has loaded (unn.ua: the HTML says 3590,
+// the page shows 12541 a moment later). Learned while the app runs: host -> true / false.
+const liveCounters = new Map();
+
+// Reads a counter in the built-in browser with read(text) -> number | null. The page may first
+// show the number from its HTML (`known`, or else the first reading), so on sites that update
+// it, wait for the update. When none comes, the last reading is returned with updated: false.
+async function renderCounter(url, read, rule, known) {
+  const host = siteKey(url);
+  const live = liveCounters.get(host);
+  let first = null;
+  let last = null;
+  const result = await pageRenderer(url, (text) => {
+    const views = read(text);
+    if (views === null) return null;
+    last = views;
+    first ??= views;
+    const base = known ?? first;
+    if (views !== base) return { views, updated: true };
+    // Known not to update: no point waiting
+    return live === false && views > 0 ? { views, updated: false } : null;
+  }, rule);
+  if (result) {
+    if (result.updated) liveCounters.set(host, true);
+    return result;
+  }
+  if (last === null) return null;
+  if (live === undefined) liveCounters.set(host, false);
+  return { views: last, updated: false };
+}
+
 async function fetchGeneric(url) {
   const rule = siteRules?.get(siteKey(url.href));
   // Sites taught in Chrome are only reachable through Chrome
@@ -384,30 +420,36 @@ async function fetchGeneric(url) {
     if (picked) return { ...picked, title: null, method: 'Chrome: за вказаним зразком' };
     throw new ViewsError('Не вдалося прочитати лічильник через Chrome', 403, 'cloudflare');
   }
-  if (rule && pageRenderer) {
-    const picked = await pageRenderer(url.href, readRuleText, rule);
-    if (picked) return { ...picked, title: picked.title ?? null, method: 'за вказаним зразком' };
-  }
 
+  let html = null;
   let quick = null;
   let quickError = null;
   try {
-    const { visibleLater, ...parsed } = parseGenericPage(await fetchText(url.href));
-    quick = parsed;
-    // The counter by the heading is filled in by a script: read it in the browser, keep
-    // schema.org as the fallback
-    if (visibleLater && quick.views > 0 && pageRenderer) {
-      const visible = await pageRenderer(url.href, (html) => {
-        const views = findHeadingCounter(html);
-        return views > 0 ? { views } : null;
-      });
-      if (visible) return { ...quick, views: visible.views, method: 'браузер: лічильник біля заголовка' };
-    }
-    // Many sites print 0 in the HTML and fill the real number in with a script
-    if (quick.views > 0) return quick;
+    html = await fetchText(url.href);
   } catch (err) {
     quickError = err;
   }
+
+  if (rule && pageRenderer) {
+    const picked = await renderCounter(url.href, parseCountText, rule, null);
+    if (picked) return { views: picked.views, title: null, method: 'за вказаним зразком' };
+  }
+
+  if (html !== null) {
+    try {
+      quick = parseGenericPage(html);
+    } catch (err) {
+      quickError = err;
+    }
+  }
+  // The byline's number in the HTML may be a snapshot the page updates once it loads
+  const byline = html === null ? null : findHeadingCounter(html);
+  if (quick && pageRenderer && byline !== null && liveCounters.get(siteKey(url.href)) !== false) {
+    const fresh = await renderCounter(url.href, findHeadingCounter, null, byline);
+    if (fresh?.updated) return { ...quick, views: fresh.views, method: 'браузер: оновлений лічильник' };
+  }
+  // Many sites print 0 in the HTML and fill the real number in with a script
+  if (quick?.views > 0) return quick;
 
   const pageMissing = quickError?.status === 404 || quickError?.status === 410 || isDnsError(quickError);
   // Whether the built-in browser was last looking at an anti-bot check (null: never saw a page)

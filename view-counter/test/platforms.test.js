@@ -8,6 +8,7 @@ import {
   parseTelegramFeed,
   parseTikTokPage,
   parseGenericPage,
+  findHeadingCounter,
   getViews,
   setPageRenderer,
   setSiteRules,
@@ -131,38 +132,54 @@ test('parseGenericPage finds view counters on news sites', () => {
   assert.throws(() => parseGenericPage('<p>Nothing here 2026</p>'));
 });
 
-test('the counter readers see beats a stale schema.org count', async (t) => {
-  // unn.ua: schema.org says 3590 while the byline under the heading shows 9306
-  const schema = '<script type="application/ld+json">{"interactionStatistic":{"interactionType":"https://schema.org/ViewAction","userInteractionCount":"3590"}}</script>';
-  const page = (byline) => `${schema}<div class="top"><span>16:06 • 120 перегляди</span></div>
-    <h1>Кабмін зняв постанову</h1><div class="meta">Київ • УНН • 16 жовтня 2026, 16:06 • ${byline}</div>
-    <p>Уряд зняв із порядку денного постанову.</p><aside>Популярні: 11497 перегляди</aside>`;
-  let r = parseGenericPage(page('9306 перегляди'));
+test('the counter readers see beats schema.org, and a byline the page updates is read live', async (t) => {
+  // unn.ua as saved from the browser: schema.org and the byline in the HTML both say 3590, the
+  // byline items are <p>s, and the page shows 12541 once its script has run
+  const page = (count) => '<script type="application/ld+json">{"interactionStatistic":{"interactionType":"https://schema.org/ViewAction","userInteractionCount":"3590"}}</script>' +
+    '<div class="top"><div class="meta">13:30 • 140 перегляди</div></div>' +
+    '<h1 class="ycrVha_newsTitle">Кабмін зняв постанову щодо бронювання</h1><div class="ycrVha_tagDateInfo">' +
+    '<p class="ycrVha_tagDateInfoItem"><b>Київ</b> • <b>УНН</b></p><p class="ycrVha_tagDateInfoItem ycrVha_meta">' +
+    `<time dateTime="2026-10-16T16:06:44">16 жовтня 2026, 13:06</time> • <!-- -->${count}<!-- --> <!-- -->перегляди</p></div>` +
+    '<div class="ycrVha_announce"><p>Уряд зняв із порядку денного засідання постанову про скорочення лімітів бронювання. Документ планують доопрацювати.</p></div>' +
+    '<aside><div class="meta">16 жовтня, 07:33 • 48270 перегляди</div></aside>';
+  assert.equal(findHeadingCounter(page('3590')), 3590);
+  let r = parseGenericPage(page('9306'));
   assert.equal(r.views, 9306);
   assert.equal(r.method, 'лічильник біля заголовка');
-  // No counter by the heading: schema.org as before
-  r = parseGenericPage(page('Політика'));
+  // No counter by the heading: schema.org, never a sidebar's number
+  r = parseGenericPage(page('').replace(' •  перегляди', ''));
   assert.equal(r.views, 3590);
   assert.equal(r.method, 'schema.org');
-  assert.equal(r.visibleLater, false);
 
-  // The byline says 0 in the HTML and a script fills it in: read it in the browser
   const realFetch = globalThis.fetch;
   t.after(() => {
     globalThis.fetch = realFetch;
     setPageRenderer(null);
   });
-  globalThis.fetch = async () => new Response(page('0 переглядів'));
-  setPageRenderer(async (url, extract) => extract(page('9306 перегляди')));
+  globalThis.fetch = async () => new Response(page('3590'));
+  // The browser first shows the HTML's number, then the script's
+  let renders = 0;
+  setPageRenderer(async (url, extract) => {
+    renders++;
+    return extract(page('3590')) ?? extract(page('12541'));
+  });
   r = await getViews('https://unn.example/news/a');
-  assert.equal(r.views, 9306);
-  assert.equal(r.method, 'браузер: лічильник біля заголовка');
-  assert.equal(r.visibleLater, undefined);
-  // The browser can't read it either: fall back to schema.org
-  setPageRenderer(async (url, extract) => extract(page('0 переглядів')));
-  r = await getViews('https://unn.example/news/b');
-  assert.equal(r.views, 3590);
-  assert.equal(r.method, 'schema.org');
+  assert.equal(r.views, 12541);
+  assert.equal(r.method, 'браузер: оновлений лічильник');
+
+  // A site whose byline never changes: the HTML's number, and the browser is skipped next time
+  globalThis.fetch = async () => new Response(page('777'));
+  setPageRenderer(async (url, extract) => {
+    renders++;
+    return extract(page('777'));
+  });
+  renders = 0;
+  r = await getViews('https://static.example/news/a');
+  assert.equal(r.views, 777);
+  assert.equal(r.method, 'лічильник біля заголовка');
+  r = await getViews('https://static.example/news/b');
+  assert.equal(r.views, 777);
+  assert.equal(renders, 1);
 });
 
 test('generic sites fall back to the page renderer', async (t) => {

@@ -558,15 +558,18 @@ function findCounterInText_(text) {
   return m ? toInt_(m[1]) : null;
 }
 
-/** Лічильник у рядку під заголовком («16 жовтня, 16:06 • 9306 перегляди») — до першого абзацу статті. */
+/** Лічильник у рядку під заголовком («16 жовтня, 16:06 • 9306 перегляди») — до першого справжнього абзацу. */
 function findHeadingCounter_(html) {
   var h1 = html.search(/<h1[\s>]/i);
   if (h1 < 0) return null;
   var rest = html.slice(h1, h1 + 50000);
-  var headingEnd = rest.search(/<\/h1>/i);
-  var para = headingEnd < 0 ? -1 : rest.slice(headingEnd).search(/<p[\s>]/i);
-  var byline = para < 0 ? rest : rest.slice(0, headingEnd + para);
-  return findCounterInText_(pageText_(byline).slice(0, 300));
+  var end = rest.length;
+  var paragraphs = /<p[\s>][\s\S]*?<\/p>/gi;
+  var p;
+  while ((p = paragraphs.exec(rest)) !== null) {
+    if (pageText_(p[0]).trim().length > 80) { end = p.index; break; }
+  }
+  return findCounterInText_(pageText_(rest.slice(0, end)).slice(0, 300));
 }
 
 /** { views, method } або null, якщо лічильника не видно. */
