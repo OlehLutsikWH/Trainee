@@ -1,6 +1,6 @@
 {
   "name": "view-counter",
-  "version": "0.1.0",
+  "version": "0.5.3",
   "description": "Paste links to posts and get their view counts",
   "type": "module",
   "private": true,
@@ -42,10 +42,16 @@
     },
     "portable": {
       "artifactName": "View-Counter-Portable-${version}.${ext}"
-    }
+    },
+    "asarUnpack": [
+      "node_modules/playwright-core/**"
+    ]
   },
   "devDependencies": {
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "playwright-core": "^1.64.1"
   }
 }

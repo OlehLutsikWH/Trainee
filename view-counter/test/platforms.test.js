@@ -8,8 +8,14 @@ import {
   parseTelegramFeed,
   parseTikTokPage,
   parseGenericPage,
+  findHeadingCounter,
   getViews,
   setPageRenderer,
+  setSiteRules,
+  parseCountText,
+  isCounterText,
+  isChallengePage,
+  setRealBrowser,
 } from '../src/platforms.js';
 
 test('parseCompactNumber', () => {
@@ -47,9 +53,9 @@ test('detectPlatform recognises supported links', () => {
 });
 
 test('parseYouTubePage', () => {
-  const html = `<meta property="og:title" content="Rick Astley &amp; Friends">
+  const html = `<meta property="og:title" content="Rick's Astley &amp; Friends">
     <script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"x","viewCount":"1234567890"}};</script>`;
-  assert.deepEqual(parseYouTubePage(html), { views: 1234567890, title: 'Rick Astley & Friends' });
+  assert.deepEqual(parseYouTubePage(html), { views: 1234567890, title: "Rick's Astley & Friends" });
   assert.throws(() => parseYouTubePage('<html></html>'));
 });
 
@@ -94,7 +100,7 @@ test('getViews reports unsupported platforms without network calls', async () =>
   assert.equal(bad.error, 'Некоректне посилання');
   const priv = await getViews('https://t.me/c/1315782736/18737');
   assert.equal(priv.ok, false);
-  assert.match(priv.error, /приватний/);
+  assert.match(priv.error, /Приватний/);
 });
 
 test('parseGenericPage finds view counters on news sites', () => {
@@ -105,10 +111,75 @@ test('parseGenericPage finds view counters on news sites', () => {
   assert.equal(views('<p>Опубліковано 12.03.2026 10:15 · 1 525 переглядів</p>'), 1525);
   assert.equal(views('<span>Переглядів: 202</span>'), 202);
   assert.equal(parseGenericPage('<meta property="og:title" content="Новина"><b>Views 5</b>').title, 'Новина');
+  assert.equal(views('<span class="meta"><i class="fa fa-eye"></i> 1 360</span>'), 1360);
+  assert.equal(views('<span><svg class="ico"><use xlink:href="/img/sprite.svg#icon-eye"></use></svg> 205</span>'), 205);
+  assert.equal(views('<div class="stats" data-views="3200"></div>'), 3200);
+  assert.equal(views('<p>1,2 тис. переглядів</p>'), 1200);
+  assert.equal(views('<span class="views-count">12.5K</span>'), 12500);
+  assert.equal(views('<span>👁 861</span>'), 861);
+  assert.equal(views('<span>Переглянуто: 45</span>'), 45);
+  assert.equal(views('<script>window.__DATA__={"article":{"id":7,"views":2723,"title":"x"}}</script>'), 2723);
+  // A "popular news" sidebar before the article must not win over the article's own counter
+  assert.equal(views(`<aside><span class="views">9</span></aside>
+    <article><h1>Стаття</h1><span class="views">861</span></article>`), 861);
+  // Counter in the meta line above the heading beats an embedded video's counter further down
+  assert.equal(views(`<aside>${'<p>меню</p>'.repeat(50)}<span class="views">9</span></aside>
+    <article><div class="meta"><span class="views">2 849</span></div><h1>Стаття</h1>
+    <p>${'Текст статті. '.repeat(100)}</p><div class="video"><span class="views">2 760</span></div></article>`), 2849);
   // Look-alike classes and dates must not be taken as views
   assert.throws(() => parseGenericPage('<div class="preview">12</div><a class="viewport">5</a>'));
   assert.throws(() => parseGenericPage('<span class="views"><svg></svg></span><time>12.03.2026</time>'));
   assert.throws(() => parseGenericPage('<p>Nothing here 2026</p>'));
+});
+
+test('the counter readers see beats schema.org, and a byline the page updates is read live', async (t) => {
+  // unn.ua as saved from the browser: schema.org and the byline in the HTML both say 3590, the
+  // byline items are <p>s, and the page shows 12541 once its script has run
+  const page = (count) => '<script type="application/ld+json">{"interactionStatistic":{"interactionType":"https://schema.org/ViewAction","userInteractionCount":"3590"}}</script>' +
+    '<div class="top"><div class="meta">13:30 • 140 перегляди</div></div>' +
+    '<h1 class="ycrVha_newsTitle">Кабмін зняв постанову щодо бронювання</h1><div class="ycrVha_tagDateInfo">' +
+    '<p class="ycrVha_tagDateInfoItem"><b>Київ</b> • <b>УНН</b></p><p class="ycrVha_tagDateInfoItem ycrVha_meta">' +
+    `<time dateTime="2026-10-16T16:06:44">16 жовтня 2026, 13:06</time> • <!-- -->${count}<!-- --> <!-- -->перегляди</p></div>` +
+    '<div class="ycrVha_announce"><p>Уряд зняв із порядку денного засідання постанову про скорочення лімітів бронювання. Документ планують доопрацювати.</p></div>' +
+    '<aside><div class="meta">16 жовтня, 07:33 • 48270 перегляди</div></aside>';
+  assert.equal(findHeadingCounter(page('3590')), 3590);
+  let r = parseGenericPage(page('9306'));
+  assert.equal(r.views, 9306);
+  assert.equal(r.method, 'лічильник біля заголовка');
+  // No counter by the heading: schema.org, never a sidebar's number
+  r = parseGenericPage(page('').replace(' •  перегляди', ''));
+  assert.equal(r.views, 3590);
+  assert.equal(r.method, 'schema.org');
+
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    setPageRenderer(null);
+  });
+  globalThis.fetch = async () => new Response(page('3590'));
+  // The browser first shows the HTML's number, then the script's
+  let renders = 0;
+  setPageRenderer(async (url, extract) => {
+    renders++;
+    return extract(page('3590')) ?? extract(page('12541'));
+  });
+  r = await getViews('https://unn.example/news/a');
+  assert.equal(r.views, 12541);
+  assert.equal(r.method, 'браузер: оновлений лічильник');
+
+  // A site whose byline never changes: the HTML's number, and the browser is skipped next time
+  globalThis.fetch = async () => new Response(page('777'));
+  setPageRenderer(async (url, extract) => {
+    renders++;
+    return extract(page('777'));
+  });
+  renders = 0;
+  r = await getViews('https://static.example/news/a');
+  assert.equal(r.views, 777);
+  assert.equal(r.method, 'лічильник біля заголовка');
+  r = await getViews('https://static.example/news/b');
+  assert.equal(r.views, 777);
+  assert.equal(renders, 1);
 });
 
 test('generic sites fall back to the page renderer', async (t) => {
@@ -148,7 +219,7 @@ test('generic sites fall back to the page renderer', async (t) => {
   globalThis.fetch = async () => new Response('<p>no counter</p>');
   r = await getViews('https://news.example/d');
   assert.equal(r.ok, false);
-  assert.match(r.error, /вбудованому браузері/);
+  assert.match(r.error, /браузері/);
 });
 
 test('titles decode numeric and named entities', () => {
@@ -156,4 +227,86 @@ test('titles decode numeric and named entities', () => {
     '<div class="tgme_widget_message_text">Привіт&#33; Це &laquo;тест&raquo; &#8211; так</div><span class="tgme_widget_message_views">5</span>',
   );
   assert.equal(title, 'Привіт! Це «тест» – так');
+});
+
+test('parseCountText reads the number from a clicked element', () => {
+  assert.equal(parseCountText('👁 3 641'), 3641);
+  assert.equal(parseCountText('Переглядів: 1,2 тис.'), 1200);
+  assert.equal(parseCountText('немає'), null);
+  assert.equal(isCounterText('861'), true);
+  assert.equal(isCounterText('👁 1,2 тис.'), true);
+  assert.equal(isCounterText('12.03.2026'), false);
+  assert.equal(isCounterText('10:15'), false);
+});
+
+test('a taught site rule is used before automatic detection', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    setPageRenderer(null);
+    setSiteRules(null);
+  });
+  const seen = [];
+  setSiteRules({ get: (site) => (site === 'news.example' ? { selector: '.meta span', index: 1 } : null) });
+  setPageRenderer(async (url, extract, rule) => {
+    seen.push(rule);
+    return rule ? extract('👁 2 612') : extract('<span class="views">5</span>');
+  });
+  globalThis.fetch = async () => new Response('<span class="views">9</span>');
+
+  const taught = await getViews('https://www.news.example/article');
+  assert.equal(taught.views, 2612);
+  assert.equal(taught.method, 'за вказаним зразком');
+  assert.deepEqual(seen, [{ selector: '.meta span', index: 1 }]);
+
+  const other = await getViews('https://other.example/a');
+  assert.equal(other.views, 9);
+});
+
+test('a zero counter is returned but flagged', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async () => new Response('<span class="post-views">0</span>');
+  const r = await getViews('https://zero.example/a');
+  assert.equal(r.views, 0);
+  assert.match(r.method, /показує 0/);
+});
+
+test('Cloudflare checks are reported as blocked, and taught-in-Chrome sites read through Chrome', async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    setPageRenderer(null);
+    setRealBrowser(null);
+    setSiteRules(null);
+  });
+  const challenge = '<html><head><title>Just a moment...</title></head><body><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/x.js"></script></body></html>';
+  assert.equal(isChallengePage(challenge), true);
+  assert.equal(isChallengePage('<p>Новина</p>'), false);
+
+  // Plain request answered by the challenge, no built-in browser (web version)
+  globalThis.fetch = async () => new Response(challenge, { status: 403, headers: { 'cf-mitigated': 'challenge' } });
+  let r = await getViews('https://blocked.example/a');
+  assert.equal(r.ok, false);
+  assert.equal(r.blocked, 'cloudflare');
+  assert.match(r.error, /Cloudflare/);
+
+  // Built-in browser stays stuck on the challenge too
+  setPageRenderer(async (url, extract) => extract(challenge));
+  r = await getViews('https://blocked.example/b');
+  assert.equal(r.blocked, 'cloudflare');
+
+  // Built-in browser gets past the check but the page has no counter: not "blocked"
+  setPageRenderer(async (url, extract) => extract('<p>no counter</p>'));
+  r = await getViews('https://blocked.example/c');
+  assert.equal(r.blocked, undefined);
+
+  // After teaching the site in Chrome, it is read through Chrome with the saved rule
+  const seen = [];
+  setSiteRules({ get: (site) => (site === 'blocked.example' ? { selector: '.cnt', index: 0, via: 'chrome' } : null) });
+  setRealBrowser(async (url, extract, rule) => { seen.push(rule.via); return extract('1 529'); });
+  r = await getViews('https://blocked.example/d');
+  assert.equal(r.views, 1529);
+  assert.match(r.method, /^Chrome/);
+  assert.deepEqual(seen, ['chrome']);
 });
