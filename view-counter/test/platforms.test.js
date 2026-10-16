@@ -131,6 +131,40 @@ test('parseGenericPage finds view counters on news sites', () => {
   assert.throws(() => parseGenericPage('<p>Nothing here 2026</p>'));
 });
 
+test('the counter readers see beats a stale schema.org count', async (t) => {
+  // unn.ua: schema.org says 3590 while the byline under the heading shows 9306
+  const schema = '<script type="application/ld+json">{"interactionStatistic":{"interactionType":"https://schema.org/ViewAction","userInteractionCount":"3590"}}</script>';
+  const page = (byline) => `${schema}<div class="top"><span>16:06 • 120 перегляди</span></div>
+    <h1>Кабмін зняв постанову</h1><div class="meta">Київ • УНН • 16 жовтня 2026, 16:06 • ${byline}</div>
+    <p>Уряд зняв із порядку денного постанову.</p><aside>Популярні: 11497 перегляди</aside>`;
+  let r = parseGenericPage(page('9306 перегляди'));
+  assert.equal(r.views, 9306);
+  assert.equal(r.method, 'лічильник біля заголовка');
+  // No counter by the heading: schema.org as before
+  r = parseGenericPage(page('Політика'));
+  assert.equal(r.views, 3590);
+  assert.equal(r.method, 'schema.org');
+  assert.equal(r.visibleLater, false);
+
+  // The byline says 0 in the HTML and a script fills it in: read it in the browser
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+    setPageRenderer(null);
+  });
+  globalThis.fetch = async () => new Response(page('0 переглядів'));
+  setPageRenderer(async (url, extract) => extract(page('9306 перегляди')));
+  r = await getViews('https://unn.example/news/a');
+  assert.equal(r.views, 9306);
+  assert.equal(r.method, 'браузер: лічильник біля заголовка');
+  assert.equal(r.visibleLater, undefined);
+  // The browser can't read it either: fall back to schema.org
+  setPageRenderer(async (url, extract) => extract(page('0 переглядів')));
+  r = await getViews('https://unn.example/news/b');
+  assert.equal(r.views, 3590);
+  assert.equal(r.method, 'schema.org');
+});
+
 test('generic sites fall back to the page renderer', async (t) => {
   const realFetch = globalThis.fetch;
   t.after(() => {

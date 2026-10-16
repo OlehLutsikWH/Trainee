@@ -558,12 +558,28 @@ function findCounterInText_(text) {
   return m ? toInt_(m[1]) : null;
 }
 
+/** Лічильник у рядку під заголовком («16 жовтня, 16:06 • 9306 перегляди») — до першого абзацу статті. */
+function findHeadingCounter_(html) {
+  var h1 = html.search(/<h1[\s>]/i);
+  if (h1 < 0) return null;
+  var rest = html.slice(h1, h1 + 50000);
+  var headingEnd = rest.search(/<\/h1>/i);
+  var para = headingEnd < 0 ? -1 : rest.slice(headingEnd).search(/<p[\s>]/i);
+  var byline = para < 0 ? rest : rest.slice(0, headingEnd + para);
+  return findCounterInText_(pageText_(byline).slice(0, 300));
+}
+
 /** { views, method } або null, якщо лічильника не видно. */
 function parseGenericPage_(html) {
   var ld = html.match(/"interactionType"\s*:\s*"[^"]*(?:WatchAction|ViewAction|ReadAction)"[^}]*?"userInteractionCount"\s*:\s*"?(\d+)/) ||
     html.match(/"userInteractionCount"\s*:\s*"?(\d+)"?[^}]*?"interactionType"\s*:\s*"[^"]*(?:WatchAction|ViewAction|ReadAction)"/) ||
     html.match(/itemprop=["']interactionCount["'][^>]*content=["'](?:UserPageVisits|UserViews):(\d+)/i);
-  if (ld) return { views: Number(ld[1]), method: 'schema.org' };
+  if (ld) {
+    // Видимий лічильник важливіший: деякі сайти (unn.ua) оновлюють schema.org рідко
+    var visible = findHeadingCounter_(html);
+    if (visible > 0) return { views: visible, method: 'лічильник біля заголовка' };
+    return { views: Number(ld[1]), method: 'schema.org' };
+  }
 
   var attr = html.match(/\sdata-(?:views|view-count|views-count|post-views|count-views)=["'](\d+)["']/i);
   if (attr) return { views: Number(attr[1]), method: 'лічильник на сторінці' };

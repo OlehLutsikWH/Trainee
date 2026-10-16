@@ -269,6 +269,11 @@ test('page parsing matches the desktop app on the same samples', () => {
   assert.equal(views('<span>👁 861</span>'), 861);
   assert.equal(views(`<aside><span class="views">9</span></aside><article><h1>Стаття</h1><span class="views">861</span></article>`), 861);
   assert.equal(views('<span class="views"><svg></svg></span><time>12.03.2026</time>'), null);
+  // unn.ua: the byline under the heading beats a stale schema.org count, sidebars don't
+  const unn = (byline) => '<script type="application/ld+json">{"interactionStatistic":{"interactionType":"https://schema.org/ViewAction","userInteractionCount":"3590"}}</script>' +
+    `<h1>Кабмін</h1><div>Київ • УНН • 16:06 • ${byline}</div><p>Текст.</p><aside>11497 перегляди</aside>`;
+  assert.equal(views(unn('9306 перегляди')), 9306);
+  assert.equal(views(unn('Політика')), 3590);
   assert.equal(ctx.parseAudience_('1,2 млн'), 1200000);
   assert.equal(ctx.parseAudience_('85 тис.'), 85000);
   assert.equal(ctx.parseAudience_(150000), 150000);

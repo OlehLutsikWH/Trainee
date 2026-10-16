@@ -277,8 +277,23 @@ export function isCounterText(text) {
   return parseCountText(t) !== null && !/\d{1,2}[.:/]\d{1,2}(?:[.:/]\d{2,4})?/.test(t);
 }
 
+// The counter in the article's byline, between its heading and the first paragraph:
+// "Київ • УНН • 16 жовтня 2026, 16:06 • 9306 перегляди". Null when there is none.
+const BYLINE_TEXT_CHARS = 300;
+
+export function findHeadingCounter(html) {
+  const h1 = html.search(/<h1[\s>]/i);
+  if (h1 < 0) return null;
+  const rest = html.slice(h1, h1 + 50000);
+  const headingEnd = rest.search(/<\/h1>/i);
+  const para = headingEnd < 0 ? -1 : rest.slice(headingEnd).search(/<p[\s>]/i);
+  const byline = para < 0 ? rest : rest.slice(0, headingEnd + para);
+  return findCounterInText(pageText(byline).slice(0, BYLINE_TEXT_CHARS));
+}
+
 // Many news sites print a view counter on the article page. Tries, in order of reliability:
 // schema.org interaction statistics, a "views" element in the markup, then "N переглядів" in the text.
+// The counter readers see wins over schema.org, which some sites (unn.ua) update far less often.
 export function parseGenericPage(html) {
   const title = metaContent(html, 'og:title');
   const found = (views, method) => ({ views, title, method });
@@ -287,7 +302,12 @@ export function parseGenericPage(html) {
     html.match(/"interactionType"\s*:\s*"[^"]*(?:WatchAction|ViewAction|ReadAction)"[^}]*?"userInteractionCount"\s*:\s*"?(\d+)/) ||
     html.match(/"userInteractionCount"\s*:\s*"?(\d+)"?[^}]*?"interactionType"\s*:\s*"[^"]*(?:WatchAction|ViewAction|ReadAction)"/) ||
     html.match(/itemprop=["']interactionCount["'][^>]*content=["'](?:UserPageVisits|UserViews):(\d+)/i);
-  if (ld) return found(Number(ld[1]), 'schema.org');
+  if (ld) {
+    const visible = findHeadingCounter(html);
+    if (visible > 0) return found(visible, 'лічильник біля заголовка');
+    // 0 by the heading: a script fills the real number in later (see fetchGeneric)
+    return { ...found(Number(ld[1]), 'schema.org'), visibleLater: visible === 0 };
+  }
 
   const attr = html.match(/\sdata-(?:views|view-count|views-count|post-views|count-views)=["'](\d+)["']/i);
   if (attr) return found(Number(attr[1]), 'лічильник на сторінці');
@@ -323,7 +343,7 @@ export function setPageRenderer(renderer) {
 
 function tryParseGeneric(html) {
   try {
-    const result = parseGenericPage(html);
+    const { visibleLater, ...result } = parseGenericPage(html);
     return result.views > 0 ? result : null;
   } catch {
     return null;
@@ -372,7 +392,17 @@ async function fetchGeneric(url) {
   let quick = null;
   let quickError = null;
   try {
-    quick = parseGenericPage(await fetchText(url.href));
+    const { visibleLater, ...parsed } = parseGenericPage(await fetchText(url.href));
+    quick = parsed;
+    // The counter by the heading is filled in by a script: read it in the browser, keep
+    // schema.org as the fallback
+    if (visibleLater && quick.views > 0 && pageRenderer) {
+      const visible = await pageRenderer(url.href, (html) => {
+        const views = findHeadingCounter(html);
+        return views > 0 ? { views } : null;
+      });
+      if (visible) return { ...quick, views: visible.views, method: 'браузер: лічильник біля заголовка' };
+    }
     // Many sites print 0 in the HTML and fill the real number in with a script
     if (quick.views > 0) return quick;
   } catch (err) {
