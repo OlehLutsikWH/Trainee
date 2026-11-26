@@ -31,7 +31,13 @@ export function createPageRenderer() {
   ses.setUserAgent(app.userAgentFallback.replace(/ (Electron|view-counter)\/\S+/gi, ''));
   const limit = limiter(MAX_PARALLEL);
 
-  return (url, extract) => limit(async () => {
+  // With a rule, read just the element the user pointed at on this site; otherwise the whole page
+  const readScript = (rule) => rule
+    ? `(() => { const els = document.querySelectorAll(${JSON.stringify(rule.selector)});
+         const el = els[${Number(rule.index) || 0}] || els[0]; return el ? el.innerText : ''; })()`
+    : 'document.documentElement.outerHTML';
+
+  return (url, extract, rule) => limit(async () => {
     const win = new BrowserWindow({
       show: false,
       webPreferences: { session: ses, images: false, backgroundThrottling: false },
@@ -45,8 +51,7 @@ export function createPageRenderer() {
       for (;;) {
         if (win.isDestroyed()) return null;
         try {
-          const html = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-          const result = extract(html);
+          const result = extract(await win.webContents.executeJavaScript(readScript(rule)));
           if (result) return result;
           // Some counters load only once the article is scrolled into view
           await win.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
