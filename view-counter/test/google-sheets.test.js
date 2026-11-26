@@ -416,6 +416,9 @@ test('the LOOQME folder is imported end to end and the report moved to "Імпо
   env.ctx.importLooqme();
   assert.deepEqual(moved, ['done']);
   assert.match(env.toasts.join('\n'), /додано 5 нових згадок, з них 4 позначено/);
-  // New rows are counted like pasted links
+  // New rows are counted like pasted links, by a separate run a minute later
+  assert.equal(sheet.values[3][7], '');
+  assert.deepEqual(env.triggers.map((t) => [t.handler, t.after]), [['continueUpdate', 60000]]);
+  env.ctx.continueUpdate();
   assert.equal(sheet.values[3][7], 2100);
 });

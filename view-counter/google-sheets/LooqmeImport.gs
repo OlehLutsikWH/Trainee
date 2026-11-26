@@ -49,10 +49,11 @@ function setupLooqme() {
   var folder = looqmeFolder_(true);
   deleteTriggers_('importLooqmeScheduled');
   ScriptApp.newTrigger('importLooqmeScheduled').timeBased().everyDays(1).atHour(LQ.DAILY_HOUR).create();
-  SpreadsheetApp.getUi().alert('Готово!\n\nПапка для звітів: «' + LQ.FOLDER + '» на вашому Google Диску\n' + folder.getUrl() +
-    '\n\nРаз на тиждень вивантажуйте з LOOQME звіт (Excel) і кладіть у цю папку. Щодня близько ' +
-    LQ.DAILY_HOUR + ':00 таблиця сама додасть нові згадки, а звіт перенесе в «' + LQ.DONE_FOLDER + '».\n' +
-    'Не хочете чекати — меню «' + VC.MENU + ' → Імпорт з LOOQME».');
+  // Без діалогового вікна: запущене з редактора Apps Script, воно чекає на клік у вкладці таблиці
+  // і за 6 хвилин обривається з «Перевищено максимальний час виконання»
+  Logger.log('Папка для звітів LOOQME: ' + folder.getUrl());
+  toast_('Готово! Кладіть звіти LOOQME (Excel) у папку «' + LQ.FOLDER + '» на Диску — щодня близько ' +
+    LQ.DAILY_HOUR + ':00 таблиця сама додасть нові згадки. Одразу: «' + VC.MENU + ' → Імпорт з LOOQME».');
 }
 
 /** Меню «Імпорт з LOOQME». */
@@ -107,12 +108,20 @@ function runLooqmeImport_() {
   } finally {
     lock.releaseLock();
   }
-  // Перегляди нових рядків (довге оновлення саме продовжиться наступними запусками)
-  if (added.length) startUpdate_(added);
+  // Перегляди нових рядків — окремим запуском за хвилину: разом з імпортом вони можуть
+  // не вкластися в 6 хвилин, які Google дає одному запуску
+  if (added.length) {
+    var props = PropertiesService.getDocumentProperties();
+    var pending = JSON.parse(props.getProperty('pendingRows') || '[]');
+    props.setProperty('pendingRows', JSON.stringify(pending.concat(added)));
+    deleteTriggers_('continueUpdate');
+    ScriptApp.newTrigger('continueUpdate').timeBased().after(60 * 1000).create();
+  }
   return {
     files: files.length,
     text: 'додано ' + stats.added + ' нових згадок' + (stats.check ? ', з них ' + stats.check + ' позначено «перевірити» (жовті)' : '') +
-      '; вже були в таблиці: ' + stats.duplicates + '; інші ключові слова: ' + stats.skipped + '.',
+      '; вже були в таблиці: ' + stats.duplicates + '; інші ключові слова: ' + stats.skipped + '.' +
+      (added.length ? ' Перегляди нових рядків з\'являться за кілька хвилин.' : ''),
   };
 }
 
