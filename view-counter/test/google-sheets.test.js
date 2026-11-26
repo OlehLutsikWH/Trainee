@@ -1,21 +1,24 @@
-// Runs google-sheets/ViewCounter.gs against a small in-memory imitation of the Apps Script services.
+// Runs google-sheets/*.gs against a small in-memory imitation of the Apps Script services.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const CODE = readFileSync(new URL('../google-sheets/ViewCounter.gs', import.meta.url), 'utf8');
+const CODE = ['ViewCounter.gs', 'LooqmeImport.gs']
+  .map((f) => readFileSync(new URL(`../google-sheets/${f}`, import.meta.url), 'utf8'))
+  .join('\n');
 
 function createSheet(name, rows) {
   const width = Math.max(...rows.map((r) => r.length));
   const values = rows.map((r) => [...r, ...Array(width - r.length).fill('')]);
   const notes = values.map((r) => r.map(() => ''));
+  const backgrounds = {};
   const ensure = (row, col) => {
     while (values.length < row) { values.push(Array(values[0].length).fill('')); notes.push(Array(values[0].length).fill('')); }
     while (values[0].length < col) { values.forEach((r) => r.push('')); notes.forEach((r) => r.push('')); }
   };
   const sheet = {
-    values, notes,
+    values, notes, backgrounds,
     getName: () => name,
     getLastRow: () => {
       for (let r = values.length; r > 0; r--) if (values[r - 1].some((v) => v !== '')) return r;
@@ -34,6 +37,13 @@ function createSheet(name, rows) {
         getColumn: () => col, getLastColumn: () => col + numCols - 1,
         getValues: () => values.slice(row - 1, row - 1 + numRows).map((r) => r.slice(col - 1, col - 1 + numCols)),
         getValue: () => values[row - 1][col - 1],
+        setValues(rows2) {
+          rows2.forEach((r, i) => r.forEach((v, j) => { values[row - 1 + i][col - 1 + j] = v; }));
+          return range;
+        },
+        getNotes: () => notes.slice(row - 1, row - 1 + numRows).map((r) => r.slice(col - 1, col - 1 + numCols)),
+        setBackground(color) { backgrounds[row] = color; return range; },
+        setNumberFormat() { return range; },
         setValue(v) { values[row - 1][col - 1] = v; return range; },
         getNote: () => notes[row - 1][col - 1],
         setNote(n) { notes[row - 1][col - 1] = n; return range; },
@@ -47,7 +57,7 @@ function createSheet(name, rows) {
   return sheet;
 }
 
-function createEnv(sheet, pages) {
+function createEnv(sheet, pages, extra = {}) {
   const props = new Map();
   const triggers = [];
   const toasts = [];
@@ -87,7 +97,9 @@ function createEnv(sheet, pages) {
       getActiveSheet: () => sheet,
       getUi: () => ({ alert: (t) => alerts.push(t), createMenu: () => menu }),
       CopyPasteType: { PASTE_FORMAT: 'format' },
+      openById: (id) => extra.openById(id),
     },
+    MimeType: { GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet' },
     PropertiesService: {
       getDocumentProperties: () => ({
         getProperty: (k) => (props.has(k) ? props.get(k) : null),
@@ -100,13 +112,14 @@ function createEnv(sheet, pages) {
       deleteTrigger: (t) => triggers.splice(triggers.indexOf(t), 1),
       newTrigger: triggerBuilder,
     },
-    LockService: { getDocumentLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
+    LockService: { getDocumentLock: () => ({ tryLock: () => true, waitLock: () => true, releaseLock: () => {} }) },
     UrlFetchApp: {
       fetchAll: (reqs) => reqs.map(respond),
       fetch: (url, req) => respond({ ...req, url }),
     },
     Utilities: { formatDate: () => '15.10.2026 10:00' },
-    Session: { getScriptTimeZone: () => 'Europe/Kyiv' },
+    Session: { getScriptTimeZone: () => 'Europe/Kyiv', getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }) },
+    ...extra.globals,
   });
   vm.runInContext(CODE, ctx);
   return { ctx, props, triggers, toasts, alerts, fetched };
@@ -281,4 +294,128 @@ test('page parsing matches the desktop app on the same samples', () => {
   assert.equal(ctx.parseAudience_('76.68M'), 76680000);
   assert.equal(ctx.parseAudience_('1,200,000'), 1200000);
   assert.equal(ctx.parseAudience_('7 668'), 7668);
+});
+
+// ---------------------------------------------------------------- LOOQME import
+
+// The columns of LOOQME's "Статті" sheet the import reads (the real export has ~56)
+const LQ_HEAD = ['Заголовок', 'Тип ЗМІ', 'Джерело', 'Анотація', 'Текст', 'Ключове слово', 'Роль', 'Код', 'Дата виходу', 'URL',
+  'Потенційні перегляди (ЗМІ)', 'Рівень видання', 'Потенційні перегляди (Соцмережі)', 'Назва місця публікації'];
+const lq = (o) => LQ_HEAD.map((h) => o[h] ?? '');
+const LQ_TABLE = [
+  LQ_HEAD,
+  lq({ 'Заголовок': 'Бригада шукає саме Вас', 'Тип ЗМІ': 'Соціальні мережі', 'Джерело': 'telegram.me', 'Ключове слово': '46 ОАеМБР', 'Код': '1', 'URL': 'https://t.me/x/1' }),
+  lq({ 'Заголовок': 'Валерія Вовк Повернення додому', 'Тип ЗМІ': 'Соціальні мережі', 'Джерело': 'telegram.me', 'Назва місця публікації': 'Куди піти? Львів',
+    'Текст': 'кошти будуть спрямовані на збір фонду «Тихо»', 'Ключове слово': 'БФ Тихо', 'Роль': 'Другорядна', 'Код': '2', 'Дата виходу': '2026-10-13',
+    'URL': 'https://telegram.me/kudy_lviv/100', 'Потенційні перегляди (Соцмережі)': '1648' }),
+  lq({ 'Заголовок': 'Духмяний благодійний проєкт', 'Тип ЗМІ': 'Соціальні мережі', 'Джерело': 'instagram', 'Назва місця публікації': 'БЛАГОДІЙНИЙ ФОНД «ТИХО»',
+    'Текст': 'про запах дому', 'Ключове слово': 'БФ Тихо', 'Роль': 'Головна', 'Код': '3', 'Дата виходу': '2026-09-28', 'URL': 'https://www.instagram.com/p/AAA/' }),
+  lq({ 'Заголовок': 'Нощта на любовта', 'Тип ЗМІ': 'Соціальні мережі', 'Джерело': 'facebook.com', 'Назва місця публікації': 'Книги за хората',
+    'Текст': 'тя просто изпищя тихо', 'Ключове слово': 'БФ Тихо', 'Роль': 'Епізодична', 'Код': '4', 'Дата виходу': '2026-08-30',
+    'URL': 'https://www.facebook.com/permalink.php?story_fbid=pfbid0X&id=1' }),
+  lq({ 'Заголовок': 'Вже є в таблиці', 'Тип ЗМІ': 'Онлайн', 'Джерело': 'radioclub.ua', 'Текст': 'разом із фондом "Тихо"', 'Ключове слово': 'БФ Тихо',
+    'Код': '5', 'Дата виходу': '2026-09-16', 'URL': 'http://radioclub.ua/news/vovk/' }),
+  lq({ 'Заголовок': 'Розшифровано автоматично', 'Тип ЗМІ': 'Радіо', 'Джерело': 'Українське радіо (радіо)', 'Текст': 'на території майбутнього тихо фонду',
+    'Ключове слово': 'БФ Тихо', 'Роль': 'Другорядна', 'Код': '6', 'Дата виходу': '2026-11-06', 'Потенційні перегляди (ЗМІ)': '1911' }),
+  lq({ 'Заголовок': 'Хірург рятує руки', 'Тип ЗМІ': 'Онлайн', 'Джерело': 'ukrinfo.org.ua', 'Текст': 'Юрій Лазаренко; благодійний фонд «Тихо» допомагає', 'Ключове слово': 'БФ Тихо',
+    'Роль': 'Епізодична', 'Код': '7', 'Дата виходу': '2026-11-08', 'URL': 'https://ukrinfo.org.ua/ukraine/hirurg', 'Рівень видання': 'Національний' }),
+  lq({ 'Заголовок': 'Той самий пост ще раз', 'Ключове слово': 'БФ Тихо', 'Код': '2', 'URL': 'https://t.me/kudy_lviv/100' }),
+];
+
+// The real sheet's columns
+const LQ_SHEET_HEAD = ['№', 'Проєкт / інфопривід', 'Заголовок / сторінка', 'Джерело', 'URL', 'Дата', 'Тип джерела', 'Перегляди',
+  'Охоплення (оцінка)', 'Рівень', 'Тип згадки', 'Короткий контекст'];
+
+function lqSheet() {
+  return createSheet('Виходи в медіа', [
+    LQ_SHEET_HEAD,
+    [1, 'тур Валерії_Повернення додому', 'Валерія Вовк вирушає', 'Radioclub', 'https://radioclub.ua/news/vovk', '16.09.2026', 'Медіа', '', '', '', '', ''],
+    [2, 'ReBone', 'Хірург (посилання лише в тексті)', 'https://ukrinfo.org.ua/', 'Хірург Юрій Лазаренко рятує руки', '08.11.2026', 'Медіа', '', '', '', '', ''],
+    [3],
+  ]);
+}
+
+test('LOOQME rows: own posts, projects, doubtful mentions and duplicates', () => {
+  const sheet = lqSheet();
+  const { ctx } = createEnv(sheet, {});
+  const keys = ctx.existingKeys_(sheet, ctx.findColumns_(sheet));
+  const plan = ctx.planLooqmeRows_(LQ_TABLE, keys);
+  assert.equal(plan.skipped, 1, 'the brigade keyword is left out');
+  assert.equal(plan.duplicates, 2, 'already in the sheet (http/https, trailing slash) and repeated in the report');
+  const byCode = Object.fromEntries(plan.items.map((i) => [i.code, i]));
+  assert.deepEqual(Object.keys(byCode), ['2', '3', '4', '6', '7']);
+
+  const kudy = byCode['2'];
+  assert.equal(kudy.values.project, 'тур Валерії_Повернення додому');
+  assert.equal(kudy.values.source, 'Куди піти? Львів');
+  assert.equal(kudy.values.type, 'Telegram');
+  assert.equal(kudy.values.reach, 1648);
+  assert.equal(kudy.values.mention, 'Пряма згадка');
+  assert.equal(kudy.values.date.getFullYear(), 2026);
+  assert.equal(kudy.check.length, 0);
+
+  const own = byCode['3'];
+  assert.equal(own.values.type, 'Власний канал фонду');
+  assert.equal(own.values.mention, 'Власний пост');
+  assert.deepEqual([...own.check].map((c) => c.split(' ')[0]), ['проєкт']);
+
+  assert.match(byCode['4'].check.join(), /хибна згадка/);
+  assert.equal(byCode['4'].values.type, 'Facebook');
+  assert.match(byCode['6'].check.join(), /немає посилання/);
+  assert.equal(byCode['6'].values.type, 'Радіо');
+  assert.equal(byCode['6'].values.reach, 1911);
+  // The sheet's ukrinfo row has no real URL, so it can't be matched: imported, but flagged as a likely duplicate
+  assert.equal(byCode['7'].values.project, 'ReBone');
+  assert.match(byCode['7'].check.join(), /можливий дубль рядка 3/);
+  assert.equal(byCode['7'].values.level, 'Національний');
+});
+
+test('LOOQME rows are appended after the last filled row, numbered, marked and not imported twice', () => {
+  const sheet = lqSheet();
+  const { ctx } = createEnv(sheet, {});
+  const cols = ctx.findColumns_(sheet);
+  const plan = ctx.planLooqmeRows_(LQ_TABLE, ctx.existingKeys_(sheet, cols));
+  const rows = ctx.writeLooqmeRows_(sheet, plan.items);
+  assert.deepEqual([...rows], [4, 5, 6, 7, 8], 'row 4 had only a number in it');
+  assert.deepEqual(sheet.values[3].slice(0, 7).map(String).slice(0, 5),
+    ['3', 'тур Валерії_Повернення додому', 'Валерія Вовк Повернення додому', 'Куди піти? Львів', 'https://telegram.me/kudy_lviv/100']);
+  assert.equal(sheet.values[3][6], 'Telegram');
+  assert.equal(sheet.values[3][8], 1648);
+  assert.equal(sheet.notes[3][2], 'LOOQME #2');
+  assert.match(sheet.notes[3][8], /^LOOQME/, 'reach from LOOQME is not an "авто" value, so updates keep it');
+  assert.equal(sheet.backgrounds[5], '#fff2cc', 'own post without a project is marked for checking (row 5)');
+  assert.equal(sheet.backgrounds[4], undefined);
+  assert.equal(sheet.values[7][0], 7);
+
+  // The same report again: nothing new
+  const again = ctx.planLooqmeRows_(LQ_TABLE, ctx.existingKeys_(sheet, cols));
+  assert.equal(again.items.length, 0);
+  assert.equal(again.duplicates, 7);
+});
+
+test('the LOOQME folder is imported end to end and the report moved to "Імпортовано"', () => {
+  const sheet = lqSheet();
+  const moved = [];
+  const done = { getId: () => 'done' };
+  const file = {
+    getId: () => 'f1', getName: () => 'bftikho_articles.xlsx', getMimeType: () => 'application/vnd.google-apps.spreadsheet',
+    getDateCreated: () => new Date(2026, 10, 11), moveTo: (f) => moved.push(f.getId()),
+  };
+  const folder = {
+    getFiles: () => { const l = [file]; return { hasNext: () => l.length > 0, next: () => l.shift() }; },
+    getFoldersByName: () => ({ hasNext: () => true, next: () => done }),
+    isTrashed: () => false,
+  };
+  const report = { getSheetByName: (n) => (n === 'Статті' ? { getDataRange: () => ({ getValues: () => LQ_TABLE }) } : null), getSheets: () => [] };
+  const env = createEnv(sheet, { 'https://telegram.me/': '<span class="tgme_widget_message_views">2.1K</span>', 'https://t.me/': '<span class="tgme_widget_message_views">2.1K</span>' }, {
+    openById: (id) => { assert.equal(id, 'f1'); return report; },
+    globals: { DriveApp: { getFolderById: () => folder } },
+  });
+  env.props.set('looqmeFolder', 'folder');
+  env.props.set('sheetName', 'Виходи в медіа');
+  env.ctx.importLooqme();
+  assert.deepEqual(moved, ['done']);
+  assert.match(env.toasts.join('\n'), /додано 5 нових згадок, з них 4 позначено/);
+  // New rows are counted like pasted links
+  assert.equal(sheet.values[3][7], 2100);
 });

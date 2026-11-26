@@ -32,8 +32,10 @@ function onOpen() {
     .createMenu(VC.MENU)
     .addItem('Оновити дані', 'updateAll')
     .addItem('Оновити виділені рядки', 'updateSelected')
+    .addItem('Імпорт з LOOQME', 'importLooqme')
     .addSeparator()
     .addItem('Налаштувати таблицю', 'setup')
+    .addItem('Налаштувати імпорт LOOQME', 'setupLooqme')
     .addToUi();
 }
 
